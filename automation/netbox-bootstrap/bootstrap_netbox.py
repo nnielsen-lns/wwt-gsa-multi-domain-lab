@@ -130,7 +130,41 @@ for a in asns:
         nb.create("/api/ipam/asns/", {"asn": int(a["asn"]), "description": a.get("description", "")}, dry_run)
         print(f"CREATE asn {a['asn']}")
 
-print("Bootstrap complete. (Prefixes will be added in the next commit.)")
+    # Prefixes
+    prefixes_path = os.path.join(ydir, "prefixes.yaml")
+    if os.path.exists(prefixes_path):
+        prefixes = load_yaml(prefixes_path).get("prefixes", [])
+        for pfx in prefixes:
+            prefix = pfx["prefix"]
+            # Try find by prefix
+            existing = nb.get_one("/api/ipam/prefixes/", {"prefix": prefix})
+            if existing:
+                print(f"SKIP prefix {prefix}")
+                continue
+
+            payload: Dict[str, Any] = {"prefix": prefix, "status": "active"}
+
+            if pfx.get("site"):
+                payload["site"] = nb.site_id(pfx["site"])
+
+            if pfx.get("vrf"):
+                payload["vrf"] = nb.vrf_id(pfx["vrf"])
+
+            if pfx.get("role"):
+                payload["role"] = nb.role_id(pfx["role"])
+
+            if pfx.get("tags"):
+                payload["tags"] = nb.tag_ids(pfx["tags"])
+
+            if pfx.get("description"):
+                payload["description"] = pfx["description"]
+
+            nb.create("/api/ipam/prefixes/", payload, dry_run)
+            print(f"CREATE prefix {prefix}")
+    else:
+        print("No prefixes.yaml found; skipping prefixes.")
+
+    print("Bootstrap complete.")
 
 if name == "main":
 main()
