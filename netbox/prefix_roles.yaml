@@ -1,0 +1,9 @@
+prefix_roles:
+
+{name: site-pool, slug: site-pool}
+
+{name: vrf-pool, slug: vrf-pool}
+
+{name: infra-underlay, slug: infra-underlay}
+
+{name: shared-services, slug: shared-services}

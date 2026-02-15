@@ -1,71 +1,65 @@
-# GS&A Enterprise Network Architecture Lab
+# WWT GS&A Multi-Domain Lab
 
 ## Overview
+This repo documents the GS&A enterprise multi-domain lab architecture and provides a NetBox (Community v4.5.2) SoT bootstrap via API.
 
-This repository documents the GS&A enterprise multi-domain lab architecture.
+Includes:
+- /16 per site addressing
+- Site ASN plan
+- VRFs: corp, iot, guest, grt + infra-underlay (global)
+- Dual WAN provider model (lab ASNs)
+- NetBox data model + YAML inventory
+- API bootstrap scripts
 
-The purpose of this repository is to provide:
+## Quick start (NetBox bootstrap)
+1) Create a NetBox API token: **Admin → API Tokens**
+2) Export env vars and run:
 
-- Deterministic IP addressing design
-- Structured BGP ASN allocation
-- Multi-VRF macro segmentation model
-- Dual WAN architecture strategy
-- NetBox (Community v4.5.2) Source-of-Truth data model
-- Clear ownership mapping across GS&A team members
+```bash
+export NETBOX_URL="https://10.0.20.15"
+export NETBOX_TOKEN="REPLACE_ME"
 
-This repository serves as both:
-- Architectural documentation
-- Version-controlled design reference
-- Foundation for automation and infrastructure-as-code
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r automation/netbox-bootstrap/requirements.txt
 
----
+# start with dry-run
+python automation/netbox-bootstrap/bootstrap_netbox.py --dry-run
 
-## Design Principles
+# then apply
+python automation/netbox-bootstrap/bootstrap_netbox.py --apply
 
-- Each site receives a unique /16 prefix
-- One ASN per site derived from its /16
-- Campus underlay uses IGP (OSPF/IS-IS)
-- WAN connectivity uses eBGP to dual providers
-- Internal ASNs (if required) must never leak over WAN
-- VRF segmentation is consistent across sites
-- NetBox is the authoritative source of truth
+Keep tokens out of Git. Only export tokens in your shell.
 
----
+Design docs
 
-## Sites and Ownership
+docs/ip-addressing.md
 
-### Data Center
-- dc-1 → 10.0.0.0/16 — owner: nate
+docs/bgp-asn-plan.md
 
-### Meraki
-- meraki-hub-1 → 10.10.0.0/16 — owner: nate
-- meraki-branch-1 → 10.11.0.0/16 — owner: sam
-- meraki-branch-2 → 10.12.0.0/16 — owner: nate
-- meraki-branch-3 → 10.13.0.0/16 — owner: bryan
-- meraki-branch-4 → 10.14.0.0/16 — owner: roger
-- meraki-branch-5 → 10.15.0.0/16 — owner: mike
-- meraki-branch-6 → 10.16.0.0/16 — owner: jenn
-- meraki-branch-7 → 10.17.0.0/16 — owner: bob
+docs/vrf-strategy.md
 
-### Catalyst Center
-- catc-branch-1 → 10.20.0.0/16 — owner: nate
-- catc-branch-2 → 10.21.0.0/16 — owner: nate
+docs/wan-architecture.md
 
----
+docs/netbox-data-model.md
+Sites and Ownership
+Site	/16 Pool	Owner
+dc-1	10.0.0.0/16	nate
+meraki-hub-1	10.10.0.0/16	nate
+meraki-branch-1	10.11.0.0/16	sam
+meraki-branch-2	10.12.0.0/16	nate
+meraki-branch-3	10.13.0.0/16	bryan
+meraki-branch-4	10.14.0.0/16	roger
+meraki-branch-5	10.15.0.0/16	mike
+meraki-branch-6	10.16.0.0/16	jenn
+meraki-branch-7	10.17.0.0/16	bob
+catc-branch-1	10.20.0.0/16	nate
+catc-branch-2	10.21.0.0/16	nate
 
-## Core Design Documents
+Notes:
 
-- [IP Addressing Plan](docs/ip-addressing.md)
-- [BGP ASN Plan](docs/bgp-asn-plan.md)
-- [VRF Strategy](docs/vrf-strategy.md)
-- [WAN Architecture](docs/wan-architecture.md)
-- [NetBox Data Model](docs/netbox-data-model.md)
+dc-1 contains shared services prefix 10.0.20.0/24 (VRF: grt)
 
----
+Naming conventions: lowercase, hyphen-delimited.
 
-## Future Enhancements
-
-- Automated NetBox provisioning from YAML
-- Config generation (Ansible / Terraform)
-- EVPN VNI & Route-Target standardization
-- Policy validation via pyATS
+Owner attribution uses owner-* tags in NetBox.
