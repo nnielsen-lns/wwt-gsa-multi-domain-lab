@@ -117,67 +117,67 @@ prefixes:
   - {prefix: 10.10.128.0/18, site: meraki-hub-1,    vrf: iot,   role: vrf-pool, tags: [pool-type-vrf, owner-nate, site-family-meraki]}
   - {prefix: 10.10.192.0/19, site: meraki-hub-1,    vrf: guest, role: vrf-pool, tags: [pool-type-vrf, owner-nate, site-family-meraki]}
   - {prefix: 10.10.224.0/19, site: meraki-hub-1,    vrf: grt,   role: vrf-pool, tags: [pool-type-vrf, owner-nate, site-family-meraki]}
-  - {prefix: 10.10.248.0/20, site: meraki-hub-1,    vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-nate, site-family-meraki]}
+  - {prefix: 10.10.240.0/20, site: meraki-hub-1,    vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-nate, site-family-meraki]}
 
   # meraki-branch-1 (10.11/16)
   - {prefix: 10.11.0.0/17,   site: meraki-branch-1, vrf: corp,  role: vrf-pool, tags: [pool-type-vrf, owner-sam, site-family-meraki]}
   - {prefix: 10.11.128.0/18, site: meraki-branch-1, vrf: iot,   role: vrf-pool, tags: [pool-type-vrf, owner-sam, site-family-meraki]}
   - {prefix: 10.11.192.0/19, site: meraki-branch-1, vrf: guest, role: vrf-pool, tags: [pool-type-vrf, owner-sam, site-family-meraki]}
   - {prefix: 10.11.224.0/19, site: meraki-branch-1, vrf: grt,   role: vrf-pool, tags: [pool-type-vrf, owner-sam, site-family-meraki]}
-  - {prefix: 10.11.248.0/20, site: meraki-branch-1, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-sam, site-family-meraki]}
+  - {prefix: 10.11.240.0/20, site: meraki-branch-1, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-sam, site-family-meraki]}
 
   # meraki-branch-2 (10.12/16)
   - {prefix: 10.12.0.0/17,   site: meraki-branch-2, vrf: corp,  role: vrf-pool, tags: [pool-type-vrf, owner-nate, site-family-meraki]}
   - {prefix: 10.12.128.0/18, site: meraki-branch-2, vrf: iot,   role: vrf-pool, tags: [pool-type-vrf, owner-nate, site-family-meraki]}
   - {prefix: 10.12.192.0/19, site: meraki-branch-2, vrf: guest, role: vrf-pool, tags: [pool-type-vrf, owner-nate, site-family-meraki]}
   - {prefix: 10.12.224.0/19, site: meraki-branch-2, vrf: grt,   role: vrf-pool, tags: [pool-type-vrf, owner-nate, site-family-meraki]}
-  - {prefix: 10.12.248.0/20, site: meraki-branch-2, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-nate, site-family-meraki]}
+  - {prefix: 10.12.240.0/20, site: meraki-branch-2, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-nate, site-family-meraki]}
 
   # meraki-branch-3 (10.13/16)
   - {prefix: 10.13.0.0/17,   site: meraki-branch-3, vrf: corp,  role: vrf-pool, tags: [pool-type-vrf, owner-bryan, site-family-meraki]}
   - {prefix: 10.13.128.0/18, site: meraki-branch-3, vrf: iot,   role: vrf-pool, tags: [pool-type-vrf, owner-bryan, site-family-meraki]}
   - {prefix: 10.13.192.0/19, site: meraki-branch-3, vrf: guest, role: vrf-pool, tags: [pool-type-vrf, owner-bryan, site-family-meraki]}
   - {prefix: 10.13.224.0/19, site: meraki-branch-3, vrf: grt,   role: vrf-pool, tags: [pool-type-vrf, owner-bryan, site-family-meraki]}
-  - {prefix: 10.13.248.0/20, site: meraki-branch-3, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-bryan, site-family-meraki]}
+  - {prefix: 10.13.240.0/20, site: meraki-branch-3, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-bryan, site-family-meraki]}
 
   # meraki-branch-4 (10.14/16)
   - {prefix: 10.14.0.0/17,   site: meraki-branch-4, vrf: corp,  role: vrf-pool, tags: [pool-type-vrf, owner-roger, site-family-meraki]}
   - {prefix: 10.14.128.0/18, site: meraki-branch-4, vrf: iot,   role: vrf-pool, tags: [pool-type-vrf, owner-roger, site-family-meraki]}
   - {prefix: 10.14.192.0/19, site: meraki-branch-4, vrf: guest, role: vrf-pool, tags: [pool-type-vrf, owner-roger, site-family-meraki]}
   - {prefix: 10.14.224.0/19, site: meraki-branch-4, vrf: grt,   role: vrf-pool, tags: [pool-type-vrf, owner-roger, site-family-meraki]}
-  - {prefix: 10.14.248.0/20, site: meraki-branch-4, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-roger, site-family-meraki]}
+  - {prefix: 10.14.240.0/20, site: meraki-branch-4, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-roger, site-family-meraki]}
 
   # meraki-branch-5 (10.15/16)
   - {prefix: 10.15.0.0/17,   site: meraki-branch-5, vrf: corp,  role: vrf-pool, tags: [pool-type-vrf, owner-mike, site-family-meraki]}
   - {prefix: 10.15.128.0/18, site: meraki-branch-5, vrf: iot,   role: vrf-pool, tags: [pool-type-vrf, owner-mike, site-family-meraki]}
   - {prefix: 10.15.192.0/19, site: meraki-branch-5, vrf: guest, role: vrf-pool, tags: [pool-type-vrf, owner-mike, site-family-meraki]}
   - {prefix: 10.15.224.0/19, site: meraki-branch-5, vrf: grt,   role: vrf-pool, tags: [pool-type-vrf, owner-mike, site-family-meraki]}
-  - {prefix: 10.15.248.0/20, site: meraki-branch-5, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-mike, site-family-meraki]}
+  - {prefix: 10.15.240.0/20, site: meraki-branch-5, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-mike, site-family-meraki]}
 
   # meraki-branch-6 (10.16/16)
   - {prefix: 10.16.0.0/17,   site: meraki-branch-6, vrf: corp,  role: vrf-pool, tags: [pool-type-vrf, owner-jenn, site-family-meraki]}
   - {prefix: 10.16.128.0/18, site: meraki-branch-6, vrf: iot,   role: vrf-pool, tags: [pool-type-vrf, owner-jenn, site-family-meraki]}
   - {prefix: 10.16.192.0/19, site: meraki-branch-6, vrf: guest, role: vrf-pool, tags: [pool-type-vrf, owner-jenn, site-family-meraki]}
   - {prefix: 10.16.224.0/19, site: meraki-branch-6, vrf: grt,   role: vrf-pool, tags: [pool-type-vrf, owner-jenn, site-family-meraki]}
-  - {prefix: 10.16.248.0/20, site: meraki-branch-6, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-jenn, site-family-meraki]}
+  - {prefix: 10.16.240.0/20, site: meraki-branch-6, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-jenn, site-family-meraki]}
 
   # meraki-branch-7 (10.17/16)
   - {prefix: 10.17.0.0/17,   site: meraki-branch-7, vrf: corp,  role: vrf-pool, tags: [pool-type-vrf, owner-bob, site-family-meraki]}
   - {prefix: 10.17.128.0/18, site: meraki-branch-7, vrf: iot,   role: vrf-pool, tags: [pool-type-vrf, owner-bob, site-family-meraki]}
   - {prefix: 10.17.192.0/19, site: meraki-branch-7, vrf: guest, role: vrf-pool, tags: [pool-type-vrf, owner-bob, site-family-meraki]}
   - {prefix: 10.17.224.0/19, site: meraki-branch-7, vrf: grt,   role: vrf-pool, tags: [pool-type-vrf, owner-bob, site-family-meraki]}
-  - {prefix: 10.17.248.0/20, site: meraki-branch-7, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-bob, site-family-meraki]}
+  - {prefix: 10.17.240.0/20, site: meraki-branch-7, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-bob, site-family-meraki]}
 
   # catc-branch-1 (10.20/16)
   - {prefix: 10.20.0.0/17,   site: catc-branch-1, vrf: corp,  role: vrf-pool, tags: [pool-type-vrf, owner-nate, site-family-catc]}
   - {prefix: 10.20.128.0/18, site: catc-branch-1, vrf: iot,   role: vrf-pool, tags: [pool-type-vrf, owner-nate, site-family-catc]}
   - {prefix: 10.20.192.0/19, site: catc-branch-1, vrf: guest, role: vrf-pool, tags: [pool-type-vrf, owner-nate, site-family-catc]}
   - {prefix: 10.20.224.0/19, site: catc-branch-1, vrf: grt,   role: vrf-pool, tags: [pool-type-vrf, owner-nate, site-family-catc]}
-  - {prefix: 10.20.248.0/20, site: catc-branch-1, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-nate, site-family-catc]}
+  - {prefix: 10.20.240.0/20, site: catc-branch-1, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-nate, site-family-catc]}
 
   # catc-branch-2 (10.21/16)
   - {prefix: 10.21.0.0/17,   site: catc-branch-2, vrf: corp,  role: vrf-pool, tags: [pool-type-vrf, owner-nate, site-family-catc]}
   - {prefix: 10.21.128.0/18, site: catc-branch-2, vrf: iot,   role: vrf-pool, tags: [pool-type-vrf, owner-nate, site-family-catc]}
   - {prefix: 10.21.192.0/19, site: catc-branch-2, vrf: guest, role: vrf-pool, tags: [pool-type-vrf, owner-nate, site-family-catc]}
   - {prefix: 10.21.224.0/19, site: catc-branch-2, vrf: grt,   role: vrf-pool, tags: [pool-type-vrf, owner-nate, site-family-catc]}
-  - {prefix: 10.21.248.0/20, site: catc-branch-2, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-nate, site-family-catc]}
+  - {prefix: 10.21.240.0/20, site: catc-branch-2, vrf: null,  role: infra-underlay, tags: [pool-type-infra, owner-nate, site-family-catc]}
