@@ -1,0 +1,21 @@
+vrf_policy:
+  - name: grt
+    vpn_id: 900
+    rt: "65000:900"
+    l3vni: 10900
+  - name: corp
+    vpn_id: 920
+    rt: "65000:920"
+    l3vni: 10920
+  - name: guest
+    vpn_id: 930
+    rt: "65000:930"
+    l3vni: 10930
+  - name: iot
+    vpn_id: 940
+    rt: "65000:940"
+    l3vni: 10940
+  - name: infra
+    vpn_id: null
+    rt: null
+    l3vni: null
