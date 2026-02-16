@@ -1,9 +1,24 @@
 vrfs:
+  - name: corp
+    rd: "65000:10"
+    description: "Corporate user traffic"
 
-{name: corp, rd: "65000:10", description: "Corporate user traffic"}
+  - name: iot
+    rd: "65000:20"
+    description: "IoT/OT traffic"
 
-{name: iot, rd: "65000:20", description: "IoT/OT traffic"}
+  - name: guest
+    rd: "65000:30"
+    description: "Guest/DIA traffic"
 
-{name: guest, rd: "65000:30", description: "Guest traffic (DIA typically)"}
+  - name: grt
+    rd: "65000:40"
+    description: "Shared services VRF carried over WAN"
 
-{name: grt, rd: "65000:40", description: "Shared services VRF carried over WAN"}
+  - name: infra
+    rd: "65000:50"
+    description: "Underlay/global routing table"
+
+  - name: infra
+    rd: ""
+    description: "Transport/global routing table (underlay). Not carried as SD-WAN VPN."
