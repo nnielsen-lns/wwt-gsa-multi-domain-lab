@@ -1,29 +1,32 @@
 tags:
+  - name: owner-nate
+    slug: owner-nate
+  - name: owner-sam
+    slug: owner-sam
+  - name: owner-bryan
+    slug: owner-bryan
+  - name: owner-roger
+    slug: owner-roger
+  - name: owner-mike
+    slug: owner-mike
+  - name: owner-jenn
+    slug: owner-jenn
+  - name: owner-bob
+    slug: owner-bob
 
-{name: owner-nate, slug: owner-nate}
+  - name: site-family-dc
+    slug: site-family-dc
+  - name: site-family-meraki
+    slug: site-family-meraki
+  - name: site-family-catc
+    slug: site-family-catc
 
-{name: owner-sam, slug: owner-sam}
+  - name: pool-type-site
+    slug: pool-type-site
+  - name: pool-type-vrf
+    slug: pool-type-vrf
+  - name: pool-type-infra
+    slug: pool-type-infra
 
-{name: owner-bryan, slug: owner-bryan}
-
-{name: owner-roger, slug: owner-roger}
-
-{name: owner-mike, slug: owner-mike}
-
-{name: owner-jenn, slug: owner-jenn}
-
-{name: owner-bob, slug: owner-bob}
-
-{name: site-family-dc, slug: site-family-dc}
-
-{name: site-family-meraki, slug: site-family-meraki}
-
-{name: site-family-catc, slug: site-family-catc}
-
-{name: pool-type-site, slug: pool-type-site}
-
-{name: pool-type-vrf, slug: pool-type-vrf}
-
-{name: pool-type-infra, slug: pool-type-infra}
-
-{name: shared-services, slug: shared-services}
+  - name: shared-services
+    slug: shared-services

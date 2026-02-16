@@ -1,0 +1,4 @@
+rirs:
+  - name: Private-Internal
+    slug: private-internal
+    is_private: true

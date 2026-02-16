@@ -1,23 +1,44 @@
 sites:
+  - name: dc-1
+    slug: dc-1
+    tags: [owner-nate, site-family-dc]
 
-{name: dc-1, slug: dc-1, tags: [owner-nate, site-family-dc]}
+  - name: meraki-hub-1
+    slug: meraki-hub-1
+    tags: [owner-nate, site-family-meraki]
 
-{name: meraki-hub-1, slug: meraki-hub-1, tags: [owner-nate, site-family-meraki]}
+  - name: meraki-branch-1
+    slug: meraki-branch-1
+    tags: [owner-sam, site-family-meraki]
 
-{name: meraki-branch-1, slug: meraki-branch-1, tags: [owner-sam, site-family-meraki]}
+  - name: meraki-branch-2
+    slug: meraki-branch-2
+    tags: [owner-nate, site-family-meraki]
 
-{name: meraki-branch-2, slug: meraki-branch-2, tags: [owner-nate, site-family-meraki]}
+  - name: meraki-branch-3
+    slug: meraki-branch-3
+    tags: [owner-bryan, site-family-meraki]
 
-{name: meraki-branch-3, slug: meraki-branch-3, tags: [owner-bryan, site-family-meraki]}
+  - name: meraki-branch-4
+    slug: meraki-branch-4
+    tags: [owner-roger, site-family-meraki]
 
-{name: meraki-branch-4, slug: meraki-branch-4, tags: [owner-roger, site-family-meraki]}
+  - name: meraki-branch-5
+    slug: meraki-branch-5
+    tags: [owner-mike, site-family-meraki]
 
-{name: meraki-branch-5, slug: meraki-branch-5, tags: [owner-mike, site-family-meraki]}
+  - name: meraki-branch-6
+    slug: meraki-branch-6
+    tags: [owner-jenn, site-family-meraki]
 
-{name: meraki-branch-6, slug: meraki-branch-6, tags: [owner-jenn, site-family-meraki]}
+  - name: meraki-branch-7
+    slug: meraki-branch-7
+    tags: [owner-bob, site-family-meraki]
 
-{name: meraki-branch-7, slug: meraki-branch-7, tags: [owner-bob, site-family-meraki]}
+  - name: catc-branch-1
+    slug: catc-branch-1
+    tags: [owner-nate, site-family-catc]
 
-{name: catc-branch-1, slug: catc-branch-1, tags: [owner-nate, site-family-catc]}
-
-{name: catc-branch-2, slug: catc-branch-2, tags: [owner-nate, site-family-catc]}
+  - name: catc-branch-2
+    slug: catc-branch-2
+    tags: [owner-nate, site-family-catc]

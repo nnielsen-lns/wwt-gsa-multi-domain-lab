@@ -208,34 +208,33 @@ class NetBox:
     ) -> None:
         existing = self.get_one("/api/extras/custom-fields/", {"name": name})
         if existing:
-            cts = existing.get("content_types", []) or []
+            cts = existing.get("object_types", []) or []
             if any(ct not in cts for ct in content_type_strs):
                 new_cts = sorted(set(cts + content_type_strs))
                 print(
-                    f"PATCH custom_field {name} (add content_types {content_type_strs})"
+                    f"PATCH custom_field {name} (add object_types {content_type_strs})"
                 )
                 self.patch(
                     f"/api/extras/custom-fields/{existing['id']}/",
-                    {"content_types": new_cts},
+                    {"object_types": new_cts},
                     dry_run,
                 )
+            else:
+                print(f"SKIP custom_field {name}")
         else:
-            print(f"SKIP custom_field {name}")
-        return
+            payload = {
+                "name": name,
+                "label": label,
+                "type": field_type,  # NetBox API type values: "text", "integer", etc.
+                "required": required,
+                "object_types": content_type_strs,
+                "description": description,
+            }
+            if default is not None:
+                payload["default"] = default
 
-        payload = {
-            "name": name,
-            "label": label,
-            "type": field_type,  # NetBox API type values: "text", "integer", etc.
-            "required": required,
-            "content_types": content_type_strs,
-            "description": description,
-        }
-        if default is not None:
-            payload["default"] = default
-
-        print(f"CREATE custom_field {name}")
-        self.create("/api/extras/custom-fields/", payload, dry_run)
+            print(f"CREATE custom_field {name}")
+            self.create("/api/extras/custom-fields/", payload, dry_run)
 
 
 def main() -> None:
@@ -442,7 +441,7 @@ def main() -> None:
 
     # --- VRF CUSTOM FIELDS + POLICY POPULATION ---
     if vrf_policy:
-        ct_strs = (["ipam.vrf"],)
+        ct_strs = ["ipam.vrf"]
 
         nb.ensure_custom_field(
             name="vpn_id",
