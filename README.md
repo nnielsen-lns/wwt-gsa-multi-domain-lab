@@ -260,6 +260,7 @@ make collections
 make deploy-campus
 make validate-campus
 make pyats-campus
+make validate-campus-full
 make teardown-campus
 make netbox-bootstrap
 
