@@ -1,0 +1,31 @@
+testbed:
+  name: campus_lab
+  credentials:
+    default:
+      username: admin
+      password: changeme
+
+devices:
+  core01:
+    os: iosxe
+    type: router
+    connections:
+      cli:
+        protocol: ssh
+        ip: 10.10.10.11
+
+  access01:
+    os: iosxe
+    type: switch
+    connections:
+      cli:
+        protocol: ssh
+        ip: 10.10.10.31
+
+  access02:
+    os: iosxe
+    type: switch
+    connections:
+      cli:
+        protocol: ssh
+        ip: 10.10.10.32

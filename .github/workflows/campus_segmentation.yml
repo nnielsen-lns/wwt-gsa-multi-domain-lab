@@ -41,6 +41,7 @@ jobs:
         if: ${{ github.event.inputs.action == 'validate' }}
         run: |
           ansible-playbook playbooks/campus_segmentation_validate.yml
+          pyats run job pyats/jobs/campus_segmentation_postcheck_job.py
 
       - name: Run teardown
         if: ${{ github.event.inputs.action == 'teardown' }}
