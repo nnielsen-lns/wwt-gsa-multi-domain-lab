@@ -247,54 +247,21 @@ Nate Nielsen
 Principal Solutions Architect
 World Wide Technology
 
+# Makefile Shortcuts
 
----
+This repo includes a Makefile to simplify common lab operations.
 
-# Why this README works well
+## Common commands
 
-It serves four purposes:
-
-1️⃣ **Architecture overview**  
-2️⃣ **Operator runbook**  
-3️⃣ **Automation explanation**  
-4️⃣ **Documentation entry point**
-
-Six months from now you will be able to open the repo and immediately remember how everything works.
-
----
-
-# One extra recommendation (very important)
-
-Also create a second document:
-
-
-docs/lab-roadmap.md
-
-
-This is where we track:
-
-- future scenarios
-- automation improvements
-- architecture changes
-- backlog ideas
-
-It prevents the README from becoming too cluttered.
-
----
-
-If you'd like, I can also help you create something **extremely useful for this repo**:
-
-A **`make` automation file** that lets you run everything with simple commands like:
-
-
+```bash
+make help
+make install
+make collections
 make deploy-campus
 make validate-campus
+make pyats-campus
 make teardown-campus
 make netbox-bootstrap
-
-
-It makes operating the lab dramatically easier.
-
 
 
 
