@@ -1,0 +1,7 @@
+*.retry
+*.log
+*.pyc
+__pycache__/
+.env
+.vscode/
+artifacts/
