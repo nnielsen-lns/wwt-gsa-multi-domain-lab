@@ -1,0 +1,29 @@
+vrfs:
+  - name: CORP
+    rd: "65000:110"
+  - name: GUEST
+    rd: "65000:120"
+  - name: IOT
+    rd: "65000:130"
+
+vlans:
+  - id: 110
+    name: CORP
+  - id: 120
+    name: GUEST
+  - id: 130
+    name: IOT
+
+svis:
+  - vlan: 110
+    vrf: CORP
+    ip: 10.110.0.1
+    mask: 255.255.255.0
+  - vlan: 120
+    vrf: GUEST
+    ip: 10.120.0.1
+    mask: 255.255.255.0
+  - vlan: 130
+    vrf: IOT
+    ip: 10.130.0.1
+    mask: 255.255.255.0

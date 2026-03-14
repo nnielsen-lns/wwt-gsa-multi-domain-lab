@@ -1,0 +1,18 @@
+---
+- name: Remove core L3 gateways
+  hosts: core
+  gather_facts: no
+  vars_files:
+    - ../scenarios/campus_segmentation/vars.yml
+
+  roles:
+    - role: teardown_l3_gateways
+
+- name: Remove campus segmentation VLAN/VRF objects
+  hosts: campus_demo
+  gather_facts: no
+  vars_files:
+    - ../scenarios/campus_segmentation/vars.yml
+
+  roles:
+    - role: teardown_vlan_vrf

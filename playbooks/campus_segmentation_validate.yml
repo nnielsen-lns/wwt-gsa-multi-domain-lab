@@ -1,0 +1,9 @@
+---
+- name: Validate campus segmentation scenario
+  hosts: campus_demo
+  gather_facts: no
+  vars_files:
+    - ../scenarios/campus_segmentation/vars.yml
+
+  roles:
+    - role: validation_postchecks

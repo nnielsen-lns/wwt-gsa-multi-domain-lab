@@ -1,0 +1,6 @@
+---
+- name: Remove SVI gateways
+  cisco.ios.ios_config:
+    lines:
+      - "no interface Vlan{{ item.vlan }}"
+  loop: "{{ svis }}"

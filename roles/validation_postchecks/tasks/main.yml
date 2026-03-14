@@ -1,0 +1,44 @@
+---
+- name: Check VLANs exist
+  cisco.ios.ios_command:
+    commands:
+      - show vlan brief
+  register: vlan_output
+
+- name: Assert CORP VLAN exists
+  ansible.builtin.assert:
+    that:
+      - "'110' in vlan_output.stdout[0]"
+    fail_msg: "VLAN 110 missing"
+    success_msg: "VLAN 110 present"
+
+- name: Assert GUEST VLAN exists
+  ansible.builtin.assert:
+    that:
+      - "'120' in vlan_output.stdout[0]"
+    fail_msg: "VLAN 120 missing"
+    success_msg: "VLAN 120 present"
+
+- name: Assert IOT VLAN exists
+  ansible.builtin.assert:
+    that:
+      - "'130' in vlan_output.stdout[0]"
+    fail_msg: "VLAN 130 missing"
+    success_msg: "VLAN 130 present"
+
+- name: Check SVIs on core
+  cisco.ios.ios_command:
+    commands:
+      - show ip interface brief | include Vlan110|Vlan120|Vlan130
+  register: svi_output
+  when: inventory_hostname in groups['core']
+
+- name: Assert SVI interfaces exist on core
+  ansible.builtin.assert:
+    that:
+      - "'Vlan110' in svi_output.stdout[0]"
+      - "'Vlan120' in svi_output.stdout[0]"
+      - "'Vlan130' in svi_output.stdout[0]"
+    fail_msg: "One or more SVIs missing"
+    success_msg: "All expected SVIs found"
+  when: inventory_hostname in groups['core']

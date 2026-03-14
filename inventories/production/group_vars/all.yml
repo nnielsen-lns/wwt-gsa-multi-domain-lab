@@ -1,0 +1,7 @@
+ansible_connection: ansible.netcommon.network_cli
+ansible_network_os: cisco.ios.ios
+ansible_user: admin
+ansible_password: changeme
+
+lab_name: wwt-gsa-multi-domain-lab
+scenario_name: campus_segmentation

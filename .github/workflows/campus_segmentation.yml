@@ -1,0 +1,48 @@
+name: Campus Segmentation Demo
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Action to run"
+        required: true
+        default: "deploy"
+        type: choice
+        options:
+          - deploy
+          - validate
+          - teardown
+
+jobs:
+  campus-segmentation:
+    runs-on: self-hosted
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          ansible-galaxy collection install cisco.ios ansible.netcommon
+
+      - name: Run deploy
+        if: ${{ github.event.inputs.action == 'deploy' }}
+        run: |
+          ansible-playbook playbooks/campus_segmentation_deploy.yml
+
+      - name: Run validate
+        if: ${{ github.event.inputs.action == 'validate' }}
+        run: |
+          ansible-playbook playbooks/campus_segmentation_validate.yml
+
+      - name: Run teardown
+        if: ${{ github.event.inputs.action == 'teardown' }}
+        run: |
+          ansible-playbook playbooks/campus_segmentation_teardown.yml

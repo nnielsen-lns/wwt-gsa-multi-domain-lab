@@ -1,0 +1,19 @@
+---
+- name: Deploy campus segmentation scenario
+  hosts: campus_demo
+  gather_facts: no
+  vars_files:
+    - ../scenarios/campus_segmentation/vars.yml
+
+  roles:
+    - role: scenario_vlan_vrf
+
+- name: Deploy core L3 gateways
+  hosts: core
+  gather_facts: no
+  vars_files:
+    - ../scenarios/campus_segmentation/vars.yml
+
+  roles:
+    - role: scenario_l3_gateways
+

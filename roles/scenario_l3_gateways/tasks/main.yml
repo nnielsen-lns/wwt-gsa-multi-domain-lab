@@ -1,0 +1,10 @@
+---
+- name: Create SVI gateways
+  cisco.ios.ios_config:
+    parents: "interface Vlan{{ item.vlan }}"
+    lines:
+      - "description {{ item.vrf }} gateway"
+      - "vrf forwarding {{ item.vrf }}"
+      - "ip address {{ item.ip }} {{ item.mask }}"
+      - "no shutdown"
+  loop: "{{ svis }}"

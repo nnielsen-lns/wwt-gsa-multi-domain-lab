@@ -1,0 +1,6 @@
+ansible
+pyats
+genie
+jmespath
+netaddr
+pynetbox

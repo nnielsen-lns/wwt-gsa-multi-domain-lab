@@ -1,0 +1,15 @@
+---
+- name: Create VRFs
+  cisco.ios.ios_config:
+    lines:
+      - "vrf definition {{ item.name }}"
+      - " rd {{ item.rd }}"
+  loop: "{{ vrfs }}"
+  when: inventory_hostname in groups['core']
+
+- name: Create VLANs
+  cisco.ios.ios_config:
+    lines:
+      - "vlan {{ item.id }}"
+      - " name {{ item.name }}"
+  loop: "{{ vlans }}"
