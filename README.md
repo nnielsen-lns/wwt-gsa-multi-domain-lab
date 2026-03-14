@@ -1,3 +1,303 @@
+README.md
+# WWT GSA Multi-Domain Lab
+
+This repository contains the infrastructure automation framework used to build and operate the **WWT GSA Multi-Domain Lab**.
+
+The goal of the lab is to simulate real enterprise network architectures across multiple domains while enabling **repeatable automation-driven demos and testing scenarios**.
+
+The lab architecture is built around:
+
+- NetBox (Source of Truth)
+- Ansible (Configuration Automation)
+- pyATS (Validation / Testing)
+- GitHub Actions (CI / Orchestration)
+- Proxmox-based infrastructure
+- Cisco-based campus network devices
+
+---
+
+# Lab Control Plane
+
+The lab uses several Intel NUC systems that provide the persistent automation and monitoring infrastructure.
+
+| Node | Purpose |
+|-----|--------|
+| NUC1 | NetBox, Ansible Controller, pyATS |
+| NUC2 | GitHub Actions self-hosted runner |
+| NUC3 | Grafana monitoring + Windows Domain Controller |
+| NUC4 | Network test endpoints / traffic generators |
+
+Physical lab servers remain powered off unless required for larger demo scenarios.
+
+---
+
+# Repository Structure
+
+
+inventories/ Ansible inventory definitions
+playbooks/ Scenario entry-point playbooks
+roles/ Reusable Ansible automation roles
+scenarios/ Scenario definitions and variables
+pyats/ Network validation tests
+.github/workflows/ GitHub CI pipelines
+scripts/ Helper scripts for operators
+docs/ Lab architecture documentation
+netbox/ NetBox bootstrap data
+automation/ NetBox bootstrap automation
+
+
+---
+
+# Automation Architecture
+
+The lab follows a structured automation workflow.
+
+```
+
+GitHub
+↓
+GitHub Actions
+↓
+Self-hosted Runner (NUC2)
+↓
+Ansible Controller (NUC1)
+↓
+Network Devices
+↓
+pyATS Validation
+
+
+NetBox acts as the Source of Truth describing the intended architecture.
+
+Scenario Model
+
+Network demonstrations are implemented as scenarios.
+
+Each scenario contains:
+
+scenarios/<scenario_name>/
+    vars.yml        scenario variables
+    topology.yml    optional topology definition
+    tests/          validation tests
+
+Example scenarios:
+
+campus_segmentation
+
+branch_edge
+
+iot_overlay
+
+Current Scenario
+Campus Segmentation
+
+This scenario deploys a simple campus segmentation architecture.
+
+Segments:
+
+VLAN	VRF	Purpose
+110	CORP	Corporate users
+120	GUEST	Guest access
+130	IOT	IoT devices
+Deploying a Scenario
+
+Use the helper script:
+
+scripts/labctl.sh
+
+Deploy:
+
+./scripts/labctl.sh up campus_segmentation
+
+Validate:
+
+./scripts/labctl.sh validate campus_segmentation
+
+Teardown:
+
+./scripts/labctl.sh down campus_segmentation
+GitHub Actions Automation
+
+Scenarios can also be executed through GitHub Actions.
+
+Navigate to:
+
+Actions → Campus Segmentation Demo → Run Workflow
+
+Select:
+
+deploy
+
+validate
+
+teardown
+
+The workflow will run on the self-hosted runner located on NUC2.
+
+pyATS Validation
+
+pyATS provides network validation after deployment.
+
+Example checks:
+
+VLANs exist
+
+SVIs exist
+
+VRFs exist
+
+Access switches have correct VLANs
+
+Run manually:
+
+pyats run job pyats/jobs/campus_segmentation_postcheck_job.py
+NetBox Source of Truth
+
+NetBox defines the authoritative network model.
+
+Objects modeled in NetBox include:
+
+Sites
+
+Devices
+
+VRFs
+
+VLANs
+
+Prefix pools
+
+Autonomous systems
+
+Bootstrap configuration is located in:
+
+automation/netbox-bootstrap/
+NetBox Tagging Model
+
+Tags are used to associate devices and objects with automation scenarios.
+
+Scenario Tags
+scenario-campus-segmentation
+scenario-branch-edge
+scenario-iot-overlay
+Role Tags
+role-core
+role-access
+role-distribution
+role-wireless
+role-shared-service
+Automation Tags
+ansible-managed
+pyats-validated
+demo-ready
+baseline
+Power / Lifecycle Tags
+always-on
+on-demand
+burst-capacity
+Running Automation Locally
+
+Install dependencies:
+
+pip install -r requirements.txt
+ansible-galaxy collection install cisco.ios ansible.netcommon
+
+Then run:
+
+ansible-playbook playbooks/campus_segmentation_deploy.yml
+Future Enhancements
+
+Planned improvements:
+
+NetBox dynamic inventory integration
+
+Access port automation
+
+ACL policy automation
+
+EVPN/VXLAN scenario
+
+Meraki branch scenario
+
+SD-WAN integration
+
+Automated traffic generation using NUC4
+
+advanced pyATS validation
+
+topology diagrams generated from NetBox
+
+Design Philosophy
+
+This lab is built around several core principles:
+
+Source of Truth first
+
+Automation over manual configuration
+
+Repeatable demo scenarios
+
+Infrastructure as code
+
+Validation before and after change
+
+Author
+
+Nate Nielsen
+Principal Solutions Architect
+World Wide Technology
+
+
+---
+
+# Why this README works well
+
+It serves four purposes:
+
+1️⃣ **Architecture overview**  
+2️⃣ **Operator runbook**  
+3️⃣ **Automation explanation**  
+4️⃣ **Documentation entry point**
+
+Six months from now you will be able to open the repo and immediately remember how everything works.
+
+---
+
+# One extra recommendation (very important)
+
+Also create a second document:
+
+
+docs/lab-roadmap.md
+
+
+This is where we track:
+
+- future scenarios
+- automation improvements
+- architecture changes
+- backlog ideas
+
+It prevents the README from becoming too cluttered.
+
+---
+
+If you'd like, I can also help you create something **extremely useful for this repo**:
+
+A **`make` automation file** that lets you run everything with simple commands like:
+
+
+make deploy-campus
+make validate-campus
+make teardown-campus
+make netbox-bootstrap
+
+
+It makes operating the lab dramatically easier.
+
+
+
+
 # WWT GS&A Multi-Domain Lab
 
 ## Overview
