@@ -1,0 +1,313 @@
+---
+# =============================================================================
+# Playbook: Task – SDA SD-WAN Fabric Configuration
+# =============================================================================
+# Lab Reference : Task - SDA SD-WAN Fabric Configuration
+# Purpose       : Verify ISR WAN Edge is connected, then attach the full
+#                 device template (with service sub-interfaces) so the branch
+#                 can reach the campus HQ over SD-WAN.
+# Collections   : cisco.ios (for verification), URI module for vManage REST
+# Target Hosts  : sdwan_manager (vManage), isr4331_branch
+# Run            : ansible-playbook -i inventory/hosts.yml \
+#                    playbooks/02_sda_sdwan_fabric_config.yml \
+#                    --vault-password-file .vault_pass
+# =============================================================================
+
+- name: "SDA SD-WAN | Step 1 – Verify ISR WAN Edge is connected in vManage"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vmanage_host: "{{ sdwan_manager_host }}"
+    vmanage_user: "{{ sdwan_manager_user }}"
+    vmanage_pass: "{{ vault_sdwan_manager_password }}"
+    target_system_ip: "172.30.255.10"
+
+  tasks:
+    - name: "Authenticate to SD-WAN Manager"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/j_security_check"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          j_username: "{{ vmanage_user }}"
+          j_password: "{{ vmanage_pass }}"
+        validate_certs: false
+        status_code: 200
+      register: vmanage_auth
+      no_log: true
+
+    - name: "Get XSRF token"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/client/token"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: xsrf_token
+
+    - name: "Query WAN Edge device status from vManage"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/device?model=vedge-ISR-4331"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: device_status
+
+    - name: "Verify target ISR is reachable"
+      ansible.builtin.assert:
+        that:
+          - device_status.json.data | selectattr('system-ip', 'equalto', target_system_ip) | list | length > 0
+          - (device_status.json.data | selectattr('system-ip', 'equalto', target_system_ip) | list | first).reachability == 'reachable'
+        fail_msg: "ISR4331 ({{ target_system_ip }}) is NOT reachable in vManage. Wait for bootstrap to complete."
+        success_msg: "ISR4331 ({{ target_system_ip }}) is reachable and connected to SD-WAN fabric."
+
+    - name: "Display WAN Edges summary"
+      ansible.builtin.debug:
+        msg: >-
+          WAN Edge {{ item['host-name'] }} | System-IP: {{ item['system-ip'] }}
+          | Status: {{ item.reachability }} | Template: {{ item['template'] | default('None') }}
+      loop: "{{ device_status.json.data }}"
+      loop_control:
+        label: "{{ item['host-name'] | default(item['system-ip']) }}"
+
+    - name: "Store session cookie and token as facts for later tasks"
+      ansible.builtin.set_fact:
+        cacheable: false
+        vmanage_cookie: "{{ vmanage_auth.set_cookie }}"
+        vmanage_token: "{{ xsrf_token.content }}"
+
+# ─── Step 2: Retrieve and inspect Device + Feature Templates ────────────────
+- name: "SDA SD-WAN | Step 2 – Inspect Device Templates"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vmanage_host: "{{ sdwan_manager_host }}"
+    vmanage_user: "{{ sdwan_manager_user }}"
+    vmanage_pass: "{{ vault_sdwan_manager_password }}"
+    full_template_name: "BRANCH-ISR4331-STATIC-VPN0-w/svc-sub-interface"
+
+  tasks:
+    - name: "Re-authenticate to SD-WAN Manager"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/j_security_check"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          j_username: "{{ vmanage_user }}"
+          j_password: "{{ vmanage_pass }}"
+        validate_certs: false
+        status_code: 200
+      register: vmanage_auth
+      no_log: true
+
+    - name: "Get XSRF token"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/client/token"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: xsrf_token
+
+    - name: "List all device templates"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/template/device"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: all_templates
+
+    - name: "Display available device templates"
+      ansible.builtin.debug:
+        msg: "Template: {{ item.templateName }} | Type: {{ item.deviceType }} | ID: {{ item.templateId }}"
+      loop: "{{ all_templates.json.data }}"
+      loop_control:
+        label: "{{ item.templateName }}"
+
+    - name: "Extract full device template ID"
+      ansible.builtin.set_fact:
+        full_device_template_id: "{{ all_templates.json.data
+          | selectattr('templateName', 'equalto', full_template_name)
+          | map(attribute='templateId')
+          | first | default('NOT_FOUND') }}"
+
+    - name: "List feature templates"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/template/feature"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: feature_templates
+
+    - name: "Display feature templates summary"
+      ansible.builtin.debug:
+        msg: "Feature Template: {{ item.templateName }} | Type: {{ item.templateType }}"
+      loop: "{{ feature_templates.json.data | selectattr('templateName', 'match', 'BRANCH-ISR4331.*') | list }}"
+      loop_control:
+        label: "{{ item.templateName }}"
+
+# ─── Step 3: Attach Full Device Template to ISR 4331 ────────────────────────
+- name: "SDA SD-WAN | Step 3 – Attach Full Device Template to ISR 4331"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vmanage_host: "{{ sdwan_manager_host }}"
+    vmanage_user: "{{ sdwan_manager_user }}"
+    vmanage_pass: "{{ vault_sdwan_manager_password }}"
+    full_template_name: "BRANCH-ISR4331-STATIC-VPN0-w/svc-sub-interface"
+    target_system_ip: "172.30.255.10"
+    branch_site_id: "105"
+    branch_hostname: "ISR4331-Branch"
+    # Sub-interface IP assignments for service VRFs
+    svc_sub_intf_prod_ip: "10.105.101.1"
+    svc_sub_intf_prod_mask: "255.255.255.0"
+    svc_sub_intf_iot_ip: "10.105.102.1"
+    svc_sub_intf_iot_mask: "255.255.255.0"
+
+  tasks:
+    - name: "Authenticate to SD-WAN Manager"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/j_security_check"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          j_username: "{{ vmanage_user }}"
+          j_password: "{{ vmanage_pass }}"
+        validate_certs: false
+        status_code: 200
+      register: vmanage_auth
+      no_log: true
+
+    - name: "Get XSRF token"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/client/token"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: xsrf_token
+
+    - name: "Get device templates list"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/template/device"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: all_templates
+
+    - name: "Get full device template ID"
+      ansible.builtin.set_fact:
+        full_device_template_id: "{{ all_templates.json.data
+          | selectattr('templateName', 'equalto', full_template_name)
+          | map(attribute='templateId')
+          | first }}"
+
+    - name: "Get device list for ISR4331"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/device?model=vedge-ISR-4331"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: device_list
+
+    - name: "Extract ISR device UUID"
+      ansible.builtin.set_fact:
+        isr_device_uuid: "{{ device_list.json.data
+          | selectattr('system-ip', 'equalto', target_system_ip)
+          | map(attribute='uuid')
+          | first }}"
+
+    - name: "Attach full device template to ISR 4331"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/template/device/config/attachvedge"
+        method: POST
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+          X-XSRF-TOKEN: "{{ xsrf_token.content }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          deviceTemplateList:
+            - templateId: "{{ full_device_template_id }}"
+              device:
+                - csv-status: "complete"
+                  csv-deviceId: "{{ isr_device_uuid }}"
+                  csv-deviceIP: "{{ target_system_ip }}"
+                  csv-host-name: "{{ branch_hostname }}"
+                  "//system/host-name": "{{ branch_hostname }}"
+                  "//system/system-ip": "{{ target_system_ip }}"
+                  "//system/site-id": "{{ branch_site_id }}"
+                  "//vpn-instance[vpn-id='1']/ip/route[prefix='0.0.0.0/0']/next-hop/address": "10.105.0.1"
+                  "//vpn-instance[vpn-id='1']/interface[if-name='GigabitEthernet0/0/2.101']/ip/address/primary": "{{ svc_sub_intf_prod_ip }}/24"
+                  "//vpn-instance[vpn-id='1']/interface[if-name='GigabitEthernet0/0/2.102']/ip/address/primary": "{{ svc_sub_intf_iot_ip }}/24"
+        validate_certs: false
+        status_code: 200
+      register: attach_result
+
+    - name: "Wait for template attachment to complete"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/device/action/status/{{ attach_result.json.id }}"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: attach_status
+      until: attach_status.json.summary.status in ['done', 'failure']
+      retries: 40
+      delay: 30
+      when: attach_result.json.id is defined
+
+    - name: "Assert template attachment succeeded"
+      ansible.builtin.assert:
+        that:
+          - attach_status.json.summary.status == 'done'
+        fail_msg: "Device template attachment FAILED. Check vManage for details."
+        success_msg: "Device template attached successfully to ISR4331-Branch."
+      when: attach_result.json.id is defined
+
+# ─── Step 4: Verify End-to-End Connectivity ─────────────────────────────────
+- name: "SDA SD-WAN | Step 4 – Verify SD-WAN Control/Data Plane"
+  hosts: isr4331_branch
+  gather_facts: false
+
+  tasks:
+    - name: "Wait for SD-WAN mode change to complete (up to 20 min)"
+      ansible.builtin.pause:
+        seconds: 60
+        prompt: "Pausing 60s before verification – SD-WAN conversion may still be in progress"
+
+    - name: "Verify SD-WAN OMP sessions"
+      cisco.ios.ios_command:
+        commands:
+          - show sdwan omp summary
+          - show sdwan omp peers
+      register: omp_status
+
+    - name: "Display OMP session status"
+      ansible.builtin.debug:
+        var: omp_status.stdout_lines
+
+    - name: "Verify BFD sessions (data plane)"
+      cisco.ios.ios_command:
+        commands:
+          - show sdwan bfd sessions
+      register: bfd_status
+
+    - name: "Display BFD session status"
+      ansible.builtin.debug:
+        var: bfd_status.stdout_lines
+
+    - name: "Verify SD-WAN control connections"
+      cisco.ios.ios_command:
+        commands:
+          - show sdwan control connections
+      register: control_conns
+
+    - name: "Display control connections"
+      ansible.builtin.debug:
+        var: control_conns.stdout_lines

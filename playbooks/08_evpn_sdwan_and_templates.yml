@@ -1,0 +1,362 @@
+---
+# =============================================================================
+# Playbook: Task – EVPN SD-WAN Fabric Configuration & Catalyst Center Templates
+# =============================================================================
+# Lab Reference : Task - EVPN SD-WAN Fabric Configuration
+#                 Task: EVPN - Catalyst Center Templates (802.1x template)
+# Purpose       : Attach the SD-WAN device template for the EVPN path (same
+#                 template as SDA path, verifies connectivity), then create an
+#                 802.1x CLI template in Catalyst Center and apply it to leaf
+#                 switch access ports.
+# Collections   : URI module, cisco.ios
+# Target Hosts  : localhost (vManage + DNAC API), fabric_switches
+# Run            : ansible-playbook -i inventory/hosts.yml \
+#                    playbooks/08_evpn_sdwan_and_templates.yml \
+#                    --vault-password-file .vault_pass
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PART A: EVPN SD-WAN Fabric Configuration
+# (Mirrors SDA path – verify and attach full device template on EVPN topology)
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: "EVPN SD-WAN | Verify ISR 4331 WAN Edge Connected"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vmanage_host: "{{ sdwan_manager_host }}"
+    vmanage_user: "{{ sdwan_manager_user }}"
+    vmanage_pass: "{{ vault_sdwan_manager_password }}"
+    target_system_ip: "172.30.255.10"
+    full_template_name: "BRANCH-ISR4331-STATIC-VPN0-w/svc-sub-interface"
+
+  tasks:
+    - name: "Authenticate to SD-WAN Manager"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/j_security_check"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          j_username: "{{ vmanage_user }}"
+          j_password: "{{ vmanage_pass }}"
+        validate_certs: false
+        status_code: 200
+      register: vmanage_auth
+      no_log: true
+
+    - name: "Get XSRF token"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/client/token"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: xsrf_token
+
+    - name: "Verify WAN Edge reachability"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/device?model=vedge-ISR-4331"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: device_status
+
+    - name: "Assert ISR is reachable"
+      ansible.builtin.assert:
+        that:
+          - device_status.json.data | selectattr('system-ip', 'equalto', target_system_ip)
+            | selectattr('reachability', 'equalto', 'reachable') | list | length > 0
+        fail_msg: "ISR ({{ target_system_ip }}) is not reachable. Complete Task 1 first."
+        success_msg: "ISR ({{ target_system_ip }}) is confirmed reachable via EVPN SD-WAN path."
+
+    - name: "Verify SD-WAN device template is attached"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/template/device/config/attached/{{ full_template_name }}"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: attached_devices
+      failed_when: false
+
+    - name: "Display template attachment status"
+      ansible.builtin.debug:
+        msg: "Template '{{ full_template_name }}' attached devices: {{ attached_devices.json.data | default([]) | map(attribute='host-name') | list }}"
+
+    # If template is not already attached, trigger attachment
+    - name: "Get device templates"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/template/device"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: template_list
+
+    - name: "Get full template ID"
+      ansible.builtin.set_fact:
+        full_template_id: "{{ template_list.json.data
+          | selectattr('templateName', 'equalto', full_template_name)
+          | map(attribute='templateId')
+          | first | default('') }}"
+
+    - name: "Get ISR device UUID"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/device?model=vedge-ISR-4331"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: isr_devices
+
+    - name: "Extract ISR UUID"
+      ansible.builtin.set_fact:
+        isr_uuid: "{{ isr_devices.json.data
+          | selectattr('system-ip', 'equalto', target_system_ip)
+          | map(attribute='uuid') | first | default('') }}"
+
+    - name: "Attach full device template (EVPN path)"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/template/device/config/attachvedge"
+        method: POST
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+          X-XSRF-TOKEN: "{{ xsrf_token.content }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          deviceTemplateList:
+            - templateId: "{{ full_template_id }}"
+              device:
+                - csv-status: "complete"
+                  csv-deviceId: "{{ isr_uuid }}"
+                  csv-deviceIP: "{{ target_system_ip }}"
+                  csv-host-name: "ISR4331-Branch"
+                  "//system/host-name": "ISR4331-Branch"
+                  "//system/system-ip": "{{ target_system_ip }}"
+                  "//system/site-id": "105"
+        validate_certs: false
+        status_code: 200
+      register: evpn_attach_result
+      when: full_template_id != '' and isr_uuid != ''
+
+    - name: "Wait for EVPN template attachment"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/device/action/status/{{ evpn_attach_result.json.id }}"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: attach_status
+      until: attach_status.json.summary.status in ['done', 'failure']
+      retries: 40
+      delay: 30
+      when: evpn_attach_result is not skipped and evpn_attach_result.json.id is defined
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PART B: Create 802.1x CLI Template in Catalyst Center (EVPN path)
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: "EVPN Templates | Create 802.1x CLI Template in Catalyst Center"
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    dnac_host: "198.18.5.100"
+    dnac_port: 443
+    dnac_username: admin
+    dnac_password: "{{ vault_dnac_password }}"
+    dnac_verify: false
+    template_project: "Lab-Templates"
+    dot1x_template_name: "802.1x-Access-Port-EVPN"
+    site_hierarchy: "Global/dCloud/Site 105"
+
+  tasks:
+    - name: "Authenticate to Catalyst Center"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/system/api/v1/auth/token"
+        method: POST
+        user: "{{ dnac_username }}"
+        password: "{{ dnac_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ dnac_verify }}"
+        status_code: 200
+      register: dnac_auth
+      no_log: true
+
+    - name: "Set DNAC token"
+      ansible.builtin.set_fact:
+        dnac_token: "{{ dnac_auth.json.Token }}"
+
+    - name: "Get template project ID"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/template-programmer/project"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: projects
+
+    - name: "Extract project ID"
+      ansible.builtin.set_fact:
+        project_id: "{{ projects.json
+          | selectattr('name', 'equalto', template_project)
+          | map(attribute='id') | first | default('') }}"
+
+    - name: "Create Lab-Templates project if not found"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/template-programmer/project"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          name: "{{ template_project }}"
+          description: "Lab CLI templates"
+        validate_certs: "{{ dnac_verify }}"
+        status_code: [200, 201, 202]
+      register: new_project
+      when: project_id == ''
+
+    - name: "Set project ID"
+      ansible.builtin.set_fact:
+        project_id: "{{ new_project.json.response.id | default(project_id) }}"
+      when: project_id == '' and new_project is not skipped
+
+    - name: "Create 802.1x access port CLI template"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/template-programmer/project/{{ project_id }}/template"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          name: "{{ dot1x_template_name }}"
+          description: "Configure access port with 802.1x for EVPN fabric endpoint authentication"
+          deviceTypes:
+            - productFamily: "Switches and Hubs"
+          softwareType: "IOS-XE"
+          softwareVariant: "XE"
+          language: "VELOCITY"
+          templateContent: |
+            aaa new-model
+            aaa authentication dot1x default group ISE_Group
+            aaa authorization network default group ISE_Group
+            aaa accounting dot1x default start-stop group ISE_Group
+            !
+            dot1x system-auth-control
+            !
+            interface $ACCESS_INTERFACE
+             description 802.1x Endpoint - $DESCRIPTION
+             switchport mode access
+             switchport access vlan $ACCESS_VLAN
+             authentication control-direction in
+             authentication event fail action next-method
+             authentication host-mode multi-auth
+             authentication order dot1x mab
+             authentication priority dot1x mab
+             authentication periodic
+             authentication timer reauthenticate server
+             authentication violation restrict
+             mab
+             dot1x pae authenticator
+             dot1x timeout tx-period 10
+             spanning-tree portfast
+             no shutdown
+          templateParams:
+            - parameterName: "ACCESS_INTERFACE"
+              dataType: "STRING"
+              defaultValue: "GigabitEthernet1/0/1"
+              description: "Interface to configure for 802.1x"
+              required: true
+            - parameterName: "ACCESS_VLAN"
+              dataType: "INTEGER"
+              defaultValue: "101"
+              description: "Access VLAN for endpoint"
+              required: true
+            - parameterName: "DESCRIPTION"
+              dataType: "STRING"
+              defaultValue: "PROD Endpoint"
+              description: "Port description"
+              required: false
+        validate_certs: "{{ dnac_verify }}"
+        status_code: [200, 201, 202]
+      register: dot1x_template
+      failed_when: >
+        dot1x_template.status not in [200, 201, 202]
+        and 'already' not in (dot1x_template.json.response.message | default('') | lower)
+
+    - name: "Display 802.1x template creation result"
+      ansible.builtin.debug:
+        var: dot1x_template.json
+
+    - name: "Get updated template list"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/template-programmer/project/{{ project_id }}/template"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: template_list
+
+    - name: "Extract 802.1x template ID"
+      ansible.builtin.set_fact:
+        dot1x_template_id: "{{ template_list.json
+          | selectattr('name', 'equalto', dot1x_template_name)
+          | map(attribute='templateId') | first | default('') }}"
+
+    - name: "Commit/version the 802.1x template"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/template-programmer/template/version"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          templateId: "{{ dot1x_template_id }}"
+          comments: "v1.0 – 802.1x for EVPN fabric endpoints"
+        validate_certs: "{{ dnac_verify }}"
+        status_code: [200, 201, 202]
+      when: dot1x_template_id != ''
+
+    - name: "Display all available templates in project"
+      ansible.builtin.debug:
+        msg: "Template: {{ item.name }} | ID: {{ item.templateId }}"
+      loop: "{{ template_list.json }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PART C: Direct IOS verification of SD-WAN EVPN path
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: "EVPN SD-WAN | Verify SD-WAN + BGP EVPN Integration on ISR"
+  hosts: isr4331_branch
+  gather_facts: false
+
+  tasks:
+    - name: "Verify SD-WAN OMP routes carrying EVPN prefixes"
+      cisco.ios.ios_command:
+        commands:
+          - "show sdwan omp routes"
+          - "show sdwan omp tlocs"
+      register: omp_info
+
+    - name: "Display OMP routing info"
+      ansible.builtin.debug:
+        var: omp_info.stdout_lines
+
+    - name: "Verify service-side VRF reachability"
+      cisco.ios.ios_command:
+        commands:
+          - "show ip route vrf 1"
+          - "show interfaces GigabitEthernet0/0/2"
+      register: svc_routes
+
+    - name: "Display service-side routing info"
+      ansible.builtin.debug:
+        var: svc_routes.stdout_lines

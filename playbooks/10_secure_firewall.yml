@@ -1,0 +1,302 @@
+---
+# =============================================================================
+# Playbook: Task – Cisco Secure Firewall Configuration
+# =============================================================================
+# Lab Reference : Task - Secure Firewall
+# Purpose       : Configure the Cisco Secure Firewall (FTD/FMC). Updates the
+#                 default access policy, creates PROD/IOT security zones,
+#                 adds access control rules for inter-VRF policy, and deploys
+#                 configuration to the managed FTD device.
+# Collections   : cisco.fmcansible, URI module
+# Target Hosts  : firewall_managers (FMC), localhost
+# Run            : ansible-playbook -i inventory/hosts.yml \
+#                    playbooks/10_secure_firewall.yml \
+#                    --vault-password-file .vault_pass
+# =============================================================================
+
+- name: "Secure Firewall | Authenticate to FMC and Configure Access Policy"
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    fmc_host: "198.18.5.200"     # Update to actual FMC IP
+    fmc_port: 443
+    fmc_username: admin
+    fmc_password: "{{ vault_fmc_password }}"
+    fmc_verify: false
+    domain_uuid: "default"       # FMC domain UUID
+
+    # Access policy settings
+    access_policy_name: "Lab-Access-Policy"
+    default_action: "BLOCK"
+    intrusion_policy: "Balanced Security and Connectivity"
+
+    # Security zones
+    security_zones:
+      - name: "PROD-ZONE"
+        description: "Production employee network zone"
+        interface_mode: "ROUTED"
+      - name: "IOT-ZONE"
+        description: "IoT device network zone"
+        interface_mode: "ROUTED"
+      - name: "WAN-ZONE"
+        description: "SD-WAN WAN-facing zone"
+        interface_mode: "ROUTED"
+
+    # Network objects
+    network_objects:
+      - name: "PROD_NETWORK"
+        value: "10.101.0.0/16"
+        type: "Network"
+      - name: "IOT_NETWORK"
+        value: "10.102.0.0/16"
+        type: "Network"
+      - name: "HQ_NETWORK"
+        value: "10.1.0.0/16"
+        type: "Network"
+
+    # Access control rules
+    ac_rules:
+      - name: "PROD-to-HQ"
+        source_zones: ["PROD-ZONE"]
+        dest_zones: ["WAN-ZONE"]
+        source_nets: ["PROD_NETWORK"]
+        dest_nets: ["HQ_NETWORK"]
+        action: "ALLOW"
+        intrusion_policy: "Balanced Security and Connectivity"
+        log: true
+      - name: "IOT-to-HQ-Restricted"
+        source_zones: ["IOT-ZONE"]
+        dest_zones: ["WAN-ZONE"]
+        source_nets: ["IOT_NETWORK"]
+        dest_nets: ["HQ_NETWORK"]
+        action: "ALLOW"
+        intrusion_policy: "Security over Connectivity"
+        log: true
+      - name: "IOT-to-PROD-Block"
+        source_zones: ["IOT-ZONE"]
+        dest_zones: ["PROD-ZONE"]
+        source_nets: ["IOT_NETWORK"]
+        dest_nets: ["PROD_NETWORK"]
+        action: "BLOCK"
+        log: true
+
+  tasks:
+    # ── FMC Authentication ─────────────────────────────────────────────────
+    - name: "Authenticate to Cisco FMC"
+      ansible.builtin.uri:
+        url: "https://{{ fmc_host }}:{{ fmc_port }}/api/fmc_platform/v1/auth/generatetoken"
+        method: POST
+        user: "{{ fmc_username }}"
+        password: "{{ fmc_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ fmc_verify }}"
+        status_code: 204
+        return_content: true
+      register: fmc_auth
+      no_log: true
+
+    - name: "Extract FMC token and domain UUID"
+      ansible.builtin.set_fact:
+        fmc_token: "{{ fmc_auth.x_auth_token }}"
+        fmc_domain_uuid: "{{ fmc_auth.domain_uuid | default(domain_uuid) }}"
+
+    # ── Get existing access policies ────────────────────────────────────────
+    - name: "List existing access control policies"
+      ansible.builtin.uri:
+        url: "https://{{ fmc_host }}:{{ fmc_port }}/api/fmc_config/v1/domain/{{ fmc_domain_uuid }}/policy/accesspolicies"
+        method: GET
+        headers:
+          X-auth-access-token: "{{ fmc_token }}"
+        validate_certs: "{{ fmc_verify }}"
+      register: existing_policies
+
+    - name: "Display existing policies"
+      ansible.builtin.debug:
+        msg: "Policy: {{ item.name }} | ID: {{ item.id }}"
+      loop: "{{ existing_policies.json.items | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # ── Create or update access policy ─────────────────────────────────────
+    - name: "Create Lab Access Control Policy"
+      ansible.builtin.uri:
+        url: "https://{{ fmc_host }}:{{ fmc_port }}/api/fmc_config/v1/domain/{{ fmc_domain_uuid }}/policy/accesspolicies"
+        method: POST
+        headers:
+          X-auth-access-token: "{{ fmc_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          name: "{{ access_policy_name }}"
+          defaultAction:
+            action: "{{ default_action }}"
+            logBegin: true
+            logEnd: true
+          type: "AccessPolicy"
+        validate_certs: "{{ fmc_verify }}"
+        status_code: [200, 201, 422]
+      register: policy_create
+
+    - name: "Extract access policy ID"
+      ansible.builtin.set_fact:
+        ac_policy_id: "{{ (existing_policies.json.items | default([])
+          | selectattr('name', 'equalto', access_policy_name)
+          | map(attribute='id') | first)
+          | default(policy_create.json.id | default('')) }}"
+
+    # ── Create Security Zones ───────────────────────────────────────────────
+    - name: "Create security zones"
+      ansible.builtin.uri:
+        url: "https://{{ fmc_host }}:{{ fmc_port }}/api/fmc_config/v1/domain/{{ fmc_domain_uuid }}/object/securityzones"
+        method: POST
+        headers:
+          X-auth-access-token: "{{ fmc_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          name: "{{ item.name }}"
+          description: "{{ item.description }}"
+          interfaceMode: "{{ item.interface_mode }}"
+          type: "SecurityZone"
+        validate_certs: "{{ fmc_verify }}"
+        status_code: [200, 201, 422]
+      loop: "{{ security_zones }}"
+      register: zone_creation
+      loop_control:
+        label: "Creating zone {{ item.name }}"
+
+    # ── Create Network Objects ──────────────────────────────────────────────
+    - name: "Create network objects"
+      ansible.builtin.uri:
+        url: "https://{{ fmc_host }}:{{ fmc_port }}/api/fmc_config/v1/domain/{{ fmc_domain_uuid }}/object/networks"
+        method: POST
+        headers:
+          X-auth-access-token: "{{ fmc_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          name: "{{ item.name }}"
+          value: "{{ item.value }}"
+          type: "{{ item.type }}"
+        validate_certs: "{{ fmc_verify }}"
+        status_code: [200, 201, 422]
+      loop: "{{ network_objects }}"
+      register: net_objects
+      loop_control:
+        label: "Creating network object {{ item.name }}"
+
+    # ── Add Access Control Rules ────────────────────────────────────────────
+    - name: "Get all security zones (to resolve IDs)"
+      ansible.builtin.uri:
+        url: "https://{{ fmc_host }}:{{ fmc_port }}/api/fmc_config/v1/domain/{{ fmc_domain_uuid }}/object/securityzones"
+        method: GET
+        headers:
+          X-auth-access-token: "{{ fmc_token }}"
+        validate_certs: "{{ fmc_verify }}"
+      register: all_zones
+
+    - name: "Get all network objects (to resolve IDs)"
+      ansible.builtin.uri:
+        url: "https://{{ fmc_host }}:{{ fmc_port }}/api/fmc_config/v1/domain/{{ fmc_domain_uuid }}/object/networks"
+        method: GET
+        headers:
+          X-auth-access-token: "{{ fmc_token }}"
+        validate_certs: "{{ fmc_verify }}"
+      register: all_nets
+
+    - name: "Build zone ID lookup dict"
+      ansible.builtin.set_fact:
+        zone_ids: "{{ dict(all_zones.json.items | default([]) | map(attribute='name')
+                       | zip(all_zones.json.items | default([]) | map(attribute='id'))) }}"
+        net_ids: "{{ dict(all_nets.json.items | default([]) | map(attribute='name')
+                      | zip(all_nets.json.items | default([]) | map(attribute='id'))) }}"
+
+    - name: "Create access control rules"
+      ansible.builtin.uri:
+        url: "https://{{ fmc_host }}:{{ fmc_port }}/api/fmc_config/v1/domain/{{ fmc_domain_uuid }}/policy/accesspolicies/{{ ac_policy_id }}/accessrules"
+        method: POST
+        headers:
+          X-auth-access-token: "{{ fmc_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          name: "{{ item.name }}"
+          action: "{{ item.action }}"
+          enabled: true
+          logBegin: "{{ item.log | default(false) }}"
+          logEnd: "{{ item.log | default(false) }}"
+          sourceZones:
+            objects: "{{ item.source_zones | map('extract', zone_ids) | map('community.general.dict_kv', 'id') | list }}"
+          destinationZones:
+            objects: "{{ item.dest_zones | map('extract', zone_ids) | map('community.general.dict_kv', 'id') | list }}"
+          sourceNetworks:
+            objects: "{{ item.source_nets | map('extract', net_ids) | map('community.general.dict_kv', 'id') | list }}"
+          destinationNetworks:
+            objects: "{{ item.dest_nets | map('extract', net_ids) | map('community.general.dict_kv', 'id') | list }}"
+          type: "AccessRule"
+        validate_certs: "{{ fmc_verify }}"
+        status_code: [200, 201]
+      loop: "{{ ac_rules }}"
+      register: rule_creation
+      loop_control:
+        label: "Creating rule {{ item.name }}"
+
+    # ── Deploy policy to managed FTD ────────────────────────────────────────
+    - name: "Get managed FTD devices"
+      ansible.builtin.uri:
+        url: "https://{{ fmc_host }}:{{ fmc_port }}/api/fmc_config/v1/domain/{{ fmc_domain_uuid }}/devices/devicerecords"
+        method: GET
+        headers:
+          X-auth-access-token: "{{ fmc_token }}"
+        validate_certs: "{{ fmc_verify }}"
+      register: managed_devices
+
+    - name: "Display managed FTD devices"
+      ansible.builtin.debug:
+        msg: "FTD: {{ item.name }} | Model: {{ item.model }} | Status: {{ item.healthStatus }}"
+      loop: "{{ managed_devices.json.items | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: "Deploy updated access policy to all FTDs"
+      ansible.builtin.uri:
+        url: "https://{{ fmc_host }}:{{ fmc_port }}/api/fmc_config/v1/domain/{{ fmc_domain_uuid }}/deployment/deploymentrequests"
+        method: POST
+        headers:
+          X-auth-access-token: "{{ fmc_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          type: "DeploymentRequest"
+          version: "{{ ansible_date_time.epoch }}"
+          forceDeploy: true
+          ignoreWarning: false
+          deviceList: "{{ managed_devices.json.items | default([]) | map(attribute='id') | list }}"
+        validate_certs: "{{ fmc_verify }}"
+        status_code: [200, 202]
+      register: deploy_result
+      when: managed_devices.json.items | default([]) | length > 0
+
+    - name: "Display deployment task ID"
+      ansible.builtin.debug:
+        msg: "FMC Deployment Task ID: {{ deploy_result.json.metadata.task.id | default('see FMC') }}"
+      when: deploy_result is not skipped
+
+    - name: "Poll deployment status"
+      ansible.builtin.uri:
+        url: "https://{{ fmc_host }}:{{ fmc_port }}/api/fmc_config/v1/domain/{{ fmc_domain_uuid }}/deployment/deploymentrequests/{{ deploy_result.json.metadata.task.id }}"
+        method: GET
+        headers:
+          X-auth-access-token: "{{ fmc_token }}"
+        validate_certs: "{{ fmc_verify }}"
+      register: deploy_status
+      until: deploy_status.json.status in ['Deployed', 'Failed']
+      retries: 30
+      delay: 20
+      when: deploy_result is not skipped and deploy_result.json.metadata.task.id is defined
+
+    - name: "Display final deployment status"
+      ansible.builtin.debug:
+        msg: "FMC Deployment Status: {{ deploy_status.json.status | default('unknown') }}"
+      when: deploy_result is not skipped

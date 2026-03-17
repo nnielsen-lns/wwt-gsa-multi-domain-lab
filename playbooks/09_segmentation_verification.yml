@@ -1,0 +1,240 @@
+---
+# =============================================================================
+# Playbook: Task – Macrosegmentation & Microsegmentation Verification
+# =============================================================================
+# Lab Reference : Macrosegmentation (VRF-based) & Microsegmentation (TrustSec)
+#                 verification sections
+# Purpose       : Verify 802.1x authentication completes correctly, check ISE
+#                 assigns proper VRF/VLAN, test VRF-based macro-segmentation
+#                 (cross-VRF ping should fail), and verify SGT-based
+#                 micro-segmentation (same VRF, blocked by policy).
+# Collections   : cisco.ios, ansible.windows (for workstation checks)
+# Target Hosts  : fabric_switches, workstations
+# Run            : ansible-playbook -i inventory/hosts.yml \
+#                    playbooks/09_segmentation_verification.yml \
+#                    --vault-password-file .vault_pass
+# =============================================================================
+
+# ─── Pre-Check: Verify 802.1x / ISE on Switches ─────────────────────────────
+- name: "Segmentation | Pre-check: 802.1x Authentication Status on Fabric Switches"
+  hosts: fabric_switches
+  gather_facts: false
+
+  vars:
+    prod_vlan: 101
+    iot_vlan: 102
+    prod_ip_range: "10.101.0.0/16"
+    iot_ip_range: "10.102.0.0/16"
+
+  tasks:
+    - name: "Show 802.1x sessions on all interfaces"
+      cisco.ios.ios_command:
+        commands:
+          - "show authentication sessions"
+      register: dot1x_sessions
+
+    - name: "Display 802.1x sessions"
+      ansible.builtin.debug:
+        var: dot1x_sessions.stdout_lines
+
+    - name: "Show Cisco TrustSec / SGT assignments"
+      cisco.ios.ios_command:
+        commands:
+          - "show cts role-based permissions"
+          - "show cts interface brief"
+      register: cts_info
+
+    - name: "Display CTS/SGT info"
+      ansible.builtin.debug:
+        var: cts_info.stdout_lines
+
+    - name: "Show MAC address table for PROD and IOT VLANs"
+      cisco.ios.ios_command:
+        commands:
+          - "show mac address-table vlan {{ prod_vlan }}"
+          - "show mac address-table vlan {{ iot_vlan }}"
+      register: mac_tables
+
+    - name: "Display MAC tables"
+      ansible.builtin.debug:
+        var: mac_tables.stdout_lines
+
+    - name: "Show VRF IP ARP table (PROD)"
+      cisco.ios.ios_command:
+        commands:
+          - "show ip arp vrf PROD"
+          - "show ip arp vrf IOT"
+      register: arp_tables
+
+    - name: "Display ARP tables for VRFs"
+      ansible.builtin.debug:
+        var: arp_tables.stdout_lines
+
+# ─── Macrosegmentation: Verify cross-VRF traffic is blocked ─────────────────
+- name: "Macrosegmentation | Verify VRF Isolation (PROD cannot reach IOT)"
+  hosts: fabric_switches
+  gather_facts: false
+  run_once: true
+
+  vars:
+    prod_test_ip: "10.101.255.1"     # loopback in PROD VRF
+    iot_test_ip: "10.102.255.1"      # loopback in IOT VRF
+    prod_vrf: "PROD"
+    iot_vrf: "IOT"
+
+  tasks:
+    - name: "Create test loopback in PROD VRF"
+      cisco.ios.ios_config:
+        lines:
+          - "description PROD-VRF-Test-Loopback"
+          - "vrf forwarding {{ prod_vrf }}"
+          - "ip address {{ prod_test_ip }} 255.255.255.255"
+          - "no shutdown"
+        parents: "interface Loopback100"
+      when: inventory_hostname == 'leaf1'
+
+    - name: "Create test loopback in IOT VRF"
+      cisco.ios.ios_config:
+        lines:
+          - "description IOT-VRF-Test-Loopback"
+          - "vrf forwarding {{ iot_vrf }}"
+          - "ip address {{ iot_test_ip }} 255.255.255.255"
+          - "no shutdown"
+        parents: "interface Loopback101"
+      when: inventory_hostname == 'leaf1'
+
+    - name: "Test connectivity within PROD VRF (should succeed)"
+      cisco.ios.ios_command:
+        commands:
+          - "ping vrf {{ prod_vrf }} {{ prod_test_ip }} source Loopback100 repeat 5"
+      register: prod_ping_self
+      when: inventory_hostname == 'leaf1'
+
+    - name: "Display PROD VRF self-ping result"
+      ansible.builtin.debug:
+        msg: "PROD self-ping: {{ prod_ping_self.stdout }}"
+      when: inventory_hostname == 'leaf1'
+
+    - name: "Test cross-VRF connectivity (PROD to IOT – should FAIL)"
+      cisco.ios.ios_command:
+        commands:
+          - "ping vrf {{ prod_vrf }} {{ iot_test_ip }} repeat 5"
+      register: cross_vrf_ping
+      when: inventory_hostname == 'leaf1'
+
+    - name: "Verify cross-VRF ping is blocked (expected: fail)"
+      ansible.builtin.assert:
+        that:
+          - "'Success rate is 0' in cross_vrf_ping.stdout[0]
+             or 'Unroutable' in cross_vrf_ping.stdout[0]
+             or 'success rate is 0' in cross_vrf_ping.stdout[0] | lower"
+        fail_msg: >-
+          SECURITY VIOLATION: PROD VRF can reach IOT VRF!
+          Macro-segmentation is NOT working correctly.
+        success_msg: "Macrosegmentation VERIFIED: PROD VRF cannot reach IOT VRF."
+      when: inventory_hostname == 'leaf1'
+
+    - name: "Test ISR SD-WAN HQ reachability from PROD VRF"
+      cisco.ios.ios_command:
+        commands:
+          - "ping vrf {{ prod_vrf }} 10.1.101.1 repeat 5"
+      register: hq_ping
+      when: inventory_hostname == 'leaf1'
+
+    - name: "Display HQ reachability result"
+      ansible.builtin.debug:
+        msg: "PROD VRF to HQ ping: {{ hq_ping.stdout }}"
+      when: inventory_hostname == 'leaf1'
+
+# ─── Microsegmentation: Verify SGT policy (TrustSec) ────────────────────────
+- name: "Microsegmentation | Verify SGT TrustSec Policy Between PRODPC1 and PRODPC2"
+  hosts: fabric_switches
+  gather_facts: false
+  run_once: true
+
+  vars:
+    prodpc1_ip: "10.101.255.50"
+    prodpc2_ip: "10.101.255.51"
+    employees_sgt: 2
+
+  tasks:
+    - name: "Show TrustSec role-based access control (RBACL) policy"
+      cisco.ios.ios_command:
+        commands:
+          - "show cts role-based permissions"
+      register: rbacl_policy
+
+    - name: "Display RBACL policy"
+      ansible.builtin.debug:
+        var: rbacl_policy.stdout_lines
+
+    - name: "Show CTS SXP connections (to ISE)"
+      cisco.ios.ios_command:
+        commands:
+          - "show cts sxp connections"
+      register: sxp_connections
+
+    - name: "Display SXP connections"
+      ansible.builtin.debug:
+        var: sxp_connections.stdout_lines
+
+    - name: "Show CTS IP-to-SGT bindings"
+      cisco.ios.ios_command:
+        commands:
+          - "show cts role-based sgt-map all"
+      register: sgt_bindings
+
+    - name: "Display IP-to-SGT bindings"
+      ansible.builtin.debug:
+        var: sgt_bindings.stdout_lines
+
+    - name: "Verify PRODPC1 is mapped to Employees SGT"
+      ansible.builtin.assert:
+        that:
+          - "prodpc1_ip in sgt_bindings.stdout[0]"
+          - "employees_sgt | string in sgt_bindings.stdout[0]"
+        fail_msg: "PRODPC1 ({{ prodpc1_ip }}) is not mapped to SGT {{ employees_sgt }}. Check ISE policy."
+        success_msg: "PRODPC1 is correctly mapped to Employees SGT {{ employees_sgt }}."
+      failed_when: false
+
+# ─── Windows workstation connectivity check ──────────────────────────────────
+- name: "Segmentation | Windows Workstation – IP & Connectivity Verification"
+  hosts: prodpc1, prodpc2, mainpc
+  gather_facts: false
+
+  tasks:
+    - name: "Get IP configuration from workstation"
+      ansible.windows.win_command:
+        cmd: "ipconfig /all"
+      register: ipconfig_output
+
+    - name: "Display IP configuration"
+      ansible.builtin.debug:
+        var: ipconfig_output.stdout_lines
+
+    - name: "Verify workstation has IP in expected range (PROD VRF)"
+      ansible.builtin.assert:
+        that:
+          - "'10.101.' in ipconfig_output.stdout"
+        fail_msg: "Workstation {{ inventory_hostname }} does not have an IP in 10.101.x.x range (PROD VRF)"
+        success_msg: "Workstation {{ inventory_hostname }} has correct PROD VRF IP assignment"
+      failed_when: false
+
+    - name: "Ping between PRODPC1 and PRODPC2 (same SGT – should succeed first)"
+      ansible.windows.win_command:
+        cmd: "ping -n 4 {{ hostvars['prodpc2']['ansible_host'] }}"
+      register: peer_ping
+      when: inventory_hostname == 'prodpc1'
+
+    - name: "Display peer ping result"
+      ansible.builtin.debug:
+        var: peer_ping.stdout_lines
+      when: inventory_hostname == 'prodpc1'
+
+    - name: "Release and renew IP if not in correct range"
+      ansible.windows.win_command:
+        cmd: "{{ item }}"
+      loop:
+        - "ipconfig /release"
+        - "ipconfig /renew"
+      when: "'10.101.' not in ipconfig_output.stdout"

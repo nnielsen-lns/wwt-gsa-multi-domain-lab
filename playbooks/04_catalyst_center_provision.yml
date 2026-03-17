@@ -1,0 +1,235 @@
+---
+# =============================================================================
+# Playbook: Task – Catalyst Center Provision Network Devices
+# =============================================================================
+# Lab Reference : Task: SDA - Provision Network Devices
+#                 Task: Provision Network Devices (EVPN path)
+# Purpose       : Assign discovered devices to their site in Catalyst Center,
+#                 then provision them. Provisioning automates ISE integration
+#                 for policy and segmentation.
+# Collections   : cisco.dnac (URI module fallback used for full REST coverage)
+# Target Hosts  : localhost
+# Run            : ansible-playbook -i inventory/hosts.yml \
+#                    playbooks/04_catalyst_center_provision.yml \
+#                    --vault-password-file .vault_pass
+# =============================================================================
+
+- name: "Catalyst Center | Provision Network Devices to Site 105"
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    dnac_host: "198.18.5.100"
+    dnac_port: 443
+    dnac_username: admin
+    dnac_password: "{{ vault_dnac_password }}"
+    dnac_verify: false
+
+    site_hierarchy: "Global/dCloud/Site 105"
+    site_name: "Site 105"
+
+    # Device management IPs (as seen by DNAC)
+    switch_ips:
+      - "172.30.255.1"
+      - "172.30.255.2"
+      - "172.30.255.3"
+    wlc_ip: "198.18.5.103"
+
+  tasks:
+    # ── Authentication ──────────────────────────────────────────────────────
+    - name: "Authenticate to Catalyst Center"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/system/api/v1/auth/token"
+        method: POST
+        user: "{{ dnac_username }}"
+        password: "{{ dnac_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ dnac_verify }}"
+        status_code: 200
+      register: dnac_auth
+      no_log: true
+
+    - name: "Set DNAC auth token"
+      ansible.builtin.set_fact:
+        dnac_token: "{{ dnac_auth.json.Token }}"
+
+    # ── Verify devices are in inventory and reachable ───────────────────────
+    - name: "Get device inventory"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/network-device"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: device_inventory
+
+    - name: "Display device inventory"
+      ansible.builtin.debug:
+        msg: "{{ item.hostname | default(item.managementIpAddress) }} | Reachable: {{ item.reachabilityStatus }}"
+      loop: "{{ device_inventory.json.response }}"
+      loop_control:
+        label: "{{ item.managementIpAddress }}"
+
+    - name: "Assert all devices are reachable before provisioning"
+      ansible.builtin.assert:
+        that:
+          - device_inventory.json.response | selectattr('reachabilityStatus', 'equalto', 'Reachable') | list | length >= 4
+        fail_msg: "Not all devices are reachable. Refresh and wait before provisioning."
+        success_msg: "All devices are reachable. Proceeding with provisioning."
+
+    # ── Get Site ID ─────────────────────────────────────────────────────────
+    - name: "Get site hierarchy to find Site 105 ID"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/site?name={{ site_name | urlencode }}"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: site_info
+
+    - name: "Extract Site 105 ID"
+      ansible.builtin.set_fact:
+        site_id: "{{ site_info.json.response[0].id }}"
+
+    - name: "Display site ID"
+      ansible.builtin.debug:
+        msg: "Site 105 ID: {{ site_id }}"
+
+    # ── Assign devices to site ──────────────────────────────────────────────
+    - name: "Build device ID list from inventory"
+      ansible.builtin.set_fact:
+        device_ids: "{{ device_inventory.json.response | map(attribute='id') | list }}"
+        switch_device_ids: >-
+          {{ device_inventory.json.response
+            | selectattr('managementIpAddress', 'in', switch_ips)
+            | map(attribute='id') | list }}
+        wlc_device_ids: >-
+          {{ device_inventory.json.response
+            | selectattr('managementIpAddress', 'equalto', wlc_ip)
+            | map(attribute='id') | list }}
+
+    - name: "Assign C9300 switches to Site 105"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/system/api/v1/site/{{ site_id }}/device"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          device:
+            - ip: "{{ item }}"
+        validate_certs: "{{ dnac_verify }}"
+        status_code: [200, 202]
+      loop: "{{ switch_ips }}"
+      register: assign_switches
+      loop_control:
+        label: "Assigning {{ item }} to {{ site_name }}"
+
+    - name: "Assign 9800 WLC to Site 105"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/system/api/v1/site/{{ site_id }}/device"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          device:
+            - ip: "{{ wlc_ip }}"
+        validate_certs: "{{ dnac_verify }}"
+        status_code: [200, 202]
+      register: assign_wlc
+
+    # ── Provision C9300 Switches ────────────────────────────────────────────
+    - name: "Provision the three C9300 switches"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/business/sda/provision-device"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          siteNameHierarchy: "{{ site_hierarchy }}"
+          deviceManagementIpAddress: "{{ item }}"
+        validate_certs: "{{ dnac_verify }}"
+        status_code: [200, 202]
+      loop: "{{ switch_ips }}"
+      register: provision_switches
+      loop_control:
+        label: "Provisioning switch {{ item }}"
+
+    - name: "Display switch provisioning task IDs"
+      ansible.builtin.debug:
+        msg: "Switch {{ item.item }} – Task ID: {{ item.json.taskId | default('see DNAC') }}"
+      loop: "{{ provision_switches.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # ── Wait for switch provisioning tasks to complete ──────────────────────
+    - name: "Poll switch provisioning task status"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/task/{{ item.json.taskId }}"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: switch_task_result
+      until: switch_task_result.json.response.endTime is defined
+      retries: 30
+      delay: 20
+      loop: "{{ provision_switches.results }}"
+      when: item.json.taskId is defined
+      loop_control:
+        label: "Polling task for {{ item.item }}"
+
+    # ── Provision 9800 WLC ──────────────────────────────────────────────────
+    - name: "Provision the 9800-CL WLC"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/business/sda/provision-device"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          siteNameHierarchy: "{{ site_hierarchy }}"
+          deviceManagementIpAddress: "{{ wlc_ip }}"
+        validate_certs: "{{ dnac_verify }}"
+        status_code: [200, 202]
+      register: provision_wlc
+
+    - name: "Wait for WLC provisioning to complete"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/task/{{ provision_wlc.json.taskId }}"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: wlc_task_result
+      until: wlc_task_result.json.response.endTime is defined
+      retries: 30
+      delay: 20
+      when: provision_wlc.json.taskId is defined
+
+    # ── Verify provisioning status ──────────────────────────────────────────
+    - name: "Get updated device inventory after provisioning"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/network-device"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: final_inventory
+
+    - name: "Display final device provisioning status"
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.hostname | default(item.managementIpAddress) }}
+          | Managed: {{ item.managedAtleastOnce }}
+          | Reachable: {{ item.reachabilityStatus }}
+          | Last Updated: {{ item.lastUpdated | default('N/A') }}
+      loop: "{{ final_inventory.json.response }}"
+      loop_control:
+        label: "{{ item.hostname | default(item.managementIpAddress) }}"

@@ -1,0 +1,254 @@
+---
+# =============================================================================
+# Playbook: Task – Catalyst Center Discovery Jobs
+# =============================================================================
+# Lab Reference : Task: SDA - Discovery Jobs in Catalyst Center
+#                 Task: Discovery Jobs in Catalyst Center (EVPN path)
+# Purpose       : Create and run a device discovery job in Catalyst Center
+#                 targeting the three C9300 switches (via loopback IPs) and
+#                 the 9800-CL Wireless LAN Controller.
+# Collections   : cisco.dnac
+# Target Hosts  : localhost (Catalyst Center REST API)
+# Run            : ansible-playbook -i inventory/hosts.yml \
+#                    playbooks/03_catalyst_center_discovery.yml \
+#                    --vault-password-file .vault_pass
+# =============================================================================
+
+- name: "Catalyst Center | Discovery Jobs – C9300 Switches & 9800 WLC"
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    dnac_host: "198.18.5.100"
+    dnac_port: 443
+    dnac_username: admin
+    dnac_password: "{{ vault_dnac_password }}"
+    dnac_verify: false
+    dnac_version: "2.3.7.9"
+
+    # Discovery job 1 – Three C9300 fabric switches (loopback range)
+    switch_discovery_name: "Site105-9300-Switches"
+    switch_loopback_ips:
+      - "172.30.255.1"
+      - "172.30.255.2"
+      - "172.30.255.3"
+
+    # Discovery job 2 – 9800-CL Wireless LAN Controller
+    wlc_discovery_name: "Site105-9800-WLC"
+    wlc_ip: "198.18.5.103"
+
+    # Credential IDs pre-configured in Catalyst Center
+    global_credential_id: ""  # populated dynamically below
+
+  tasks:
+    # ── Authenticate and retrieve token ────────────────────────────────────
+    - name: "Authenticate to Catalyst Center and obtain token"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/system/api/v1/auth/token"
+        method: POST
+        user: "{{ dnac_username }}"
+        password: "{{ dnac_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ dnac_verify }}"
+        status_code: 200
+        return_content: true
+      register: dnac_auth
+      no_log: true
+
+    - name: "Set DNAC token fact"
+      ansible.builtin.set_fact:
+        dnac_token: "{{ dnac_auth.json.Token }}"
+
+    # ── Check existing discoveries ──────────────────────────────────────────
+    - name: "Retrieve list of existing discovery jobs"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/discovery"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        validate_certs: "{{ dnac_verify }}"
+      register: existing_discoveries
+
+    - name: "Display existing discoveries"
+      ansible.builtin.debug:
+        msg: "Existing discovery: {{ item.name }} | Status: {{ item.discoveryStatus }}"
+      loop: "{{ existing_discoveries.json.response | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # ── Retrieve pre-configured credentials ────────────────────────────────
+    - name: "Get global CLI credentials"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/global-credential?credentialSubType=CLI"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: cli_credentials
+
+    - name: "Get SNMP v2c credentials"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/global-credential?credentialSubType=SNMPV2_READ_COMMUNITY"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: snmp_credentials
+
+    - name: "Extract CLI credential ID"
+      ansible.builtin.set_fact:
+        cli_cred_id: "{{ cli_credentials.json.response[0].id | default('') }}"
+        snmp_cred_id: "{{ snmp_credentials.json.response[0].id | default('') }}"
+
+    # ── Discovery Job 1: C9300 Switches ────────────────────────────────────
+    - name: "Create discovery job for C9300 switches (IP address range)"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/discovery"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          name: "{{ switch_discovery_name }}"
+          discoveryType: "IP_ADDRESS_LIST"
+          ipAddressList: "{{ switch_loopback_ips | join(',') }}"
+          preferredMgmtIPMethod: "UseLoopBack"
+          protocolOrder: "ssh"
+          timeout: 5
+          retry: 3
+          globalCredentialIdList:
+            - "{{ cli_cred_id }}"
+            - "{{ snmp_cred_id }}"
+          enablePasswordList: []
+          passwordList: []
+          usernameList: []
+          snmpMode: "NOAUTHNOPRIV"
+          snmpVersion: "v2"
+        validate_certs: "{{ dnac_verify }}"
+        status_code: 201
+      register: switch_discovery
+      when: cli_cred_id | length > 0
+
+    - name: "Display switch discovery job creation result"
+      ansible.builtin.debug:
+        msg: "Switch discovery task ID: {{ switch_discovery.json.response.taskId | default('check DNAC') }}"
+      when: switch_discovery is not skipped
+
+    # ── Discovery Job 2: 9800-CL WLC ───────────────────────────────────────
+    - name: "Create discovery job for 9800-CL WLC"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/discovery"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          name: "{{ wlc_discovery_name }}"
+          discoveryType: "SINGLE"
+          ipAddressList: "{{ wlc_ip }}"
+          preferredMgmtIPMethod: "None"
+          protocolOrder: "ssh"
+          timeout: 5
+          retry: 3
+          globalCredentialIdList:
+            - "{{ cli_cred_id }}"
+            - "{{ snmp_cred_id }}"
+          snmpMode: "NOAUTHNOPRIV"
+          snmpVersion: "v2"
+        validate_certs: "{{ dnac_verify }}"
+        status_code: 201
+      register: wlc_discovery
+      when: cli_cred_id | length > 0
+
+    - name: "Display WLC discovery job creation result"
+      ansible.builtin.debug:
+        msg: "WLC discovery task ID: {{ wlc_discovery.json.response.taskId | default('check DNAC') }}"
+      when: wlc_discovery is not skipped
+
+    # ── Poll Task Completion ────────────────────────────────────────────────
+    - name: "Wait for switch discovery task to complete"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/task/{{ switch_discovery.json.response.taskId }}"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: switch_task_status
+      until: switch_task_status.json.response.endTime is defined
+      retries: 20
+      delay: 15
+      when: switch_discovery.json.response.taskId is defined
+
+    - name: "Wait for WLC discovery task to complete"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/task/{{ wlc_discovery.json.response.taskId }}"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: wlc_task_status
+      until: wlc_task_status.json.response.endTime is defined
+      retries: 20
+      delay: 15
+      when: wlc_discovery.json.response.taskId is defined
+
+    # ── Retrieve discovery IDs and poll discovery status ────────────────────
+    - name: "Get all discovery jobs to find our new ones"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/discovery"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: all_discoveries
+
+    - name: "Display discovery job status"
+      ansible.builtin.debug:
+        msg: "Discovery: {{ item.name }} | Status: {{ item.discoveryStatus }} | Devices found: {{ item.numDevices | default(0) }}"
+      loop: "{{ all_discoveries.json.response | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # ── Verify Discovered Devices in Inventory ──────────────────────────────
+    - name: "Get device inventory from Catalyst Center"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/network-device"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: device_inventory
+      retries: 10
+      delay: 30
+      until: (device_inventory.json.response | length) >= 4
+
+    - name: "Display all discovered devices"
+      ansible.builtin.debug:
+        msg: >-
+          Device: {{ item.hostname | default(item.managementIpAddress) }}
+          | Platform: {{ item.platformId }}
+          | Reachability: {{ item.reachabilityStatus }}
+          | IP: {{ item.managementIpAddress }}
+      loop: "{{ device_inventory.json.response }}"
+      loop_control:
+        label: "{{ item.hostname | default(item.managementIpAddress) }}"
+
+    - name: "Assert all 4 expected devices are in inventory"
+      ansible.builtin.assert:
+        that:
+          - device_inventory.json.response | length >= 4
+        fail_msg: "Expected at least 4 devices (3x C9300 + 1x WLC). Only {{ device_inventory.json.response | length }} found."
+        success_msg: "All expected devices discovered successfully ({{ device_inventory.json.response | length }} total)."
+
+    - name: "Assert all devices are reachable"
+      ansible.builtin.assert:
+        that:
+          - item.reachabilityStatus == 'Reachable'
+        fail_msg: "Device {{ item.hostname }} is NOT reachable ({{ item.reachabilityStatus }}). Check connectivity."
+        success_msg: "Device {{ item.hostname }} is reachable."
+      loop: "{{ device_inventory.json.response }}"
+      loop_control:
+        label: "{{ item.hostname | default(item.managementIpAddress) }}"

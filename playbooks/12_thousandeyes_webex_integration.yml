@@ -1,0 +1,192 @@
+---
+# =============================================================================
+# Playbook: Task 12 – ThousandEyes and Webex Integration
+# =============================================================================
+# Lab Reference : Task 12 - ThousandEyes and Webex Integration
+# Purpose       : Configure the cross-architecture integration between the
+#                 ThousandEyes organization and Webex Control Hub using an
+#                 OAuth Bearer Token. Verifies Dynamic Session tests are
+#                 running and linked to Webex.
+# Collections   : URI module
+# Target Hosts  : localhost
+# Run            : ansible-playbook -i inventory/hosts.yml \
+#                    playbooks/12_thousandeyes_webex_integration.yml \
+#                    --vault-password-file .vault_pass
+# =============================================================================
+
+- name: "TE + Webex | Configure ThousandEyes – Webex Control Hub Integration"
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    te_api_url: "https://api.thousandeyes.com/v7"
+    te_token: "{{ vault_te_bearer_token }}"
+    webex_token: "{{ vault_webex_bearer_token }}"
+    webex_api_url: "https://webexapis.com/v1"
+    integration_name: "Webex-TE-Integration"
+
+  tasks:
+    # ── Step 1: Create OAuth Bearer Token reference ─────────────────────────
+    # NOTE: In the lab, the user creates the OAuth token via:
+    # TE Portal → Manage → Account Settings → Users and Roles → User API Tokens
+    # This play USES the pre-created token stored in vault.yml
+
+    - name: "Verify ThousandEyes API connectivity"
+      ansible.builtin.uri:
+        url: "{{ te_api_url }}/account-groups"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ te_token }}"
+          Content-Type: application/json
+        status_code: 200
+      register: te_verify
+      no_log: true
+
+    - name: "Display TE account info"
+      ansible.builtin.debug:
+        msg: "TE Account Group: {{ te_verify.json.accountGroups[0].accountGroupName | default('N/A') }}"
+
+    # ── Step 2: Create the integration in Webex Control Hub ─────────────────
+    - name: "Verify Webex API connectivity"
+      ansible.builtin.uri:
+        url: "{{ webex_api_url }}/people/me"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ webex_token }}"
+        status_code: 200
+      register: webex_verify
+      no_log: true
+
+    - name: "Display Webex identity"
+      ansible.builtin.debug:
+        msg: "Webex User: {{ webex_verify.json.displayName | default('N/A') }} | Org: {{ webex_verify.json.orgId | default('N/A') }}"
+
+    - name: "Store Webex organization ID"
+      ansible.builtin.set_fact:
+        webex_org_id: "{{ webex_verify.json.orgId | default('') }}"
+
+    # ── Step 3: Check for existing TE integrations in Webex ─────────────────
+    - name: "Check existing ThousandEyes integrations in Webex Control Hub"
+      ansible.builtin.uri:
+        url: "{{ webex_api_url }}/organizations/{{ webex_org_id }}/integrations/thousandeyes"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ webex_token }}"
+        status_code: [200, 404]
+      register: existing_integration
+      failed_when: false
+
+    - name: "Display existing integration status"
+      ansible.builtin.debug:
+        msg: "Existing TE integration: {{ existing_integration.json | default('None found') }}"
+
+    # ── Step 4: Create or update TE-Webex integration ───────────────────────
+    - name: "Create ThousandEyes integration in Webex Control Hub"
+      ansible.builtin.uri:
+        url: "{{ webex_api_url }}/organizations/{{ webex_org_id }}/integrations/thousandeyes"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ webex_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          oauthToken: "{{ te_token }}"
+          integrationName: "{{ integration_name }}"
+          description: "ThousandEyes integration for Webex network diagnostics"
+        status_code: [200, 201, 409]
+      register: create_integration
+      failed_when: >
+        create_integration.status not in [200, 201, 409]
+
+    - name: "Display integration creation result"
+      ansible.builtin.debug:
+        msg: >-
+          Integration {{ 'created' if create_integration.status in [200, 201] else 'already exists' }}.
+          Status: {{ create_integration.status }}
+
+    # ── Step 5: Configure TE integration settings in Webex ──────────────────
+    - name: "Enable ThousandEyes diagnostics in Webex meetings"
+      ansible.builtin.uri:
+        url: "{{ webex_api_url }}/organizations/{{ webex_org_id }}/settings/thousandeyes"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ webex_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          enableDiagnostics: true
+          enableProactiveTroubleshooting: true
+          showInMeetingUI: true
+        status_code: [200, 204]
+      register: webex_te_settings
+      failed_when: false
+
+    - name: "Display Webex TE settings update result"
+      ansible.builtin.debug:
+        msg: "TE diagnostics in Webex: {{ 'Enabled' if webex_te_settings.status in [200, 204] else 'Check Webex portal' }}"
+
+    # ── Step 6: Verify ThousandEyes can see Webex test data ─────────────────
+    - name: "Get TE tests related to Webex"
+      ansible.builtin.uri:
+        url: "{{ te_api_url }}/tests"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ te_token }}"
+        status_code: 200
+      register: all_te_tests
+
+    - name: "Display Webex-related TE tests"
+      ansible.builtin.debug:
+        msg: "Test: {{ item.testName }} | Type: {{ item.type }} | Interval: {{ item.interval }}s"
+      loop: "{{ all_te_tests.json.tests | default([])
+               | selectattr('testName', 'search', 'Webex|webex', ignorecase=True) | list }}"
+      loop_control:
+        label: "{{ item.testName | default('unknown') }}"
+
+    - name: "Get TE endpoint tests (Dynamic sessions)"
+      ansible.builtin.uri:
+        url: "{{ te_api_url }}/endpoint-tests/dynamic-tests"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ te_token }}"
+        status_code: 200
+      register: dynamic_tests
+      failed_when: false
+
+    - name: "Display Dynamic Session tests"
+      ansible.builtin.debug:
+        msg: "Dynamic Test: {{ item.testName }} | App: {{ item.application }} | Enabled: {{ item.enabled }}"
+      loop: "{{ dynamic_tests.json.tests | default([]) }}"
+      loop_control:
+        label: "{{ item.testName | default('unknown') }}"
+
+    # ── Step 7: Retrieve Webex meeting diagnostic data (post-meeting) ────────
+    - name: "Get recent Webex meeting quality data (via TE)"
+      ansible.builtin.uri:
+        url: "{{ te_api_url }}/endpoint-data/user-sessions?window=1h"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ te_token }}"
+        status_code: 200
+      register: user_sessions
+      failed_when: false
+
+    - name: "Display recent session count"
+      ansible.builtin.debug:
+        msg: "Recent TE endpoint sessions: {{ user_sessions.json.userSessions | default([]) | length }}"
+
+    # ── Step 8: Summary ─────────────────────────────────────────────────────
+    - name: "Integration configuration summary"
+      ansible.builtin.debug:
+        msg: |
+          ┌─────────────────────────────────────────────────────────────┐
+          │     ThousandEyes ↔ Webex Integration Summary                │
+          ├─────────────────────────────────────────────────────────────┤
+          │ TE Account:     {{ te_verify.json.accountGroups[0].accountGroupName | default('N/A') }}
+          │ Webex User:     {{ webex_verify.json.displayName | default('N/A') }}
+          │ Integration:    {{ integration_name }}
+          │ Dynamic Tests:  {{ dynamic_tests.json.tests | default([]) | length }} configured
+          │                                                             │
+          │ To verify: Start a Webex meeting, then check TE portal for  │
+          │ session diagnostics under Endpoint Experience → Dashboards   │
+          └─────────────────────────────────────────────────────────────┘

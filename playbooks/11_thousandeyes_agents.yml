@@ -1,0 +1,382 @@
+---
+# =============================================================================
+# Playbook: Task – Deploy ThousandEyes Enterprise & Endpoint Agents
+# =============================================================================
+# Lab Reference : Task - Deploy ThousandEyes Enterprise Agent (App Hosting)
+#                 Task 11 - Deploy ThousandEyes Endpoint Agents
+# Purpose       : (1) Deploy ThousandEyes Enterprise Agent to C9300 leaf
+#                     switches via Catalyst Center App Hosting workflow;
+#                 (2) Configure Enterprise Agent network tests (HTTP/BGP);
+#                 (3) Retrieve Endpoint Agent installer link from TE API.
+# Collections   : cisco.dnac, URI module, ansible.windows
+# Target Hosts  : localhost (DNAC + TE REST API), workstations (WinRM)
+# Run            : ansible-playbook -i inventory/hosts.yml \
+#                    playbooks/11_thousandeyes_agents.yml \
+#                    --vault-password-file .vault_pass
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PART A: Deploy Enterprise Agent via Catalyst Center App Hosting
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: "ThousandEyes Enterprise | Deploy via Catalyst Center App Hosting"
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    dnac_host: "198.18.5.100"
+    dnac_port: 443
+    dnac_username: admin
+    dnac_password: "{{ vault_dnac_password }}"
+    dnac_verify: false
+
+    te_app_name: "ThousandEyes"
+    site_hierarchy: "Global/dCloud/Site 105"
+    site_name: "Site 105"
+
+    # C9300 switches to deploy enterprise agent to
+    te_enterprise_switches:
+      - ip: "172.30.255.1"
+        hostname: "leaf1"
+        te_management_ip: "172.30.255.1"
+      - ip: "172.30.255.2"
+        hostname: "leaf2"
+        te_management_ip: "172.30.255.2"
+      - ip: "172.30.255.3"
+        hostname: "leaf3"
+        te_management_ip: "172.30.255.3"
+
+    # ThousandEyes API settings
+    te_api_url: "https://api.thousandeyes.com/v7"
+    te_token: "{{ vault_te_bearer_token }}"
+    te_account_group: ""      # Will be populated dynamically
+
+  tasks:
+    # ── Authenticate to DNAC ───────────────────────────────────────────────
+    - name: "Authenticate to Catalyst Center"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/system/api/v1/auth/token"
+        method: POST
+        user: "{{ dnac_username }}"
+        password: "{{ dnac_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ dnac_verify }}"
+        status_code: 200
+      register: dnac_auth
+      no_log: true
+
+    - name: "Set DNAC token"
+      ansible.builtin.set_fact:
+        dnac_token: "{{ dnac_auth.json.Token }}"
+
+    # ── Check App Hosting availability ─────────────────────────────────────
+    - name: "Get available App Hosting applications in Catalyst Center"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/app-hosting/application"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: available_apps
+      failed_when: false
+
+    - name: "Display available App Hosting applications"
+      ansible.builtin.debug:
+        msg: "App: {{ item.appName | default(item.name) }} | Version: {{ item.version | default('N/A') }}"
+      loop: "{{ available_apps.json.response | default([]) }}"
+      loop_control:
+        label: "{{ item.appName | default(item.name | default('unknown')) }}"
+
+    - name: "Find ThousandEyes app ID"
+      ansible.builtin.set_fact:
+        te_app_id: "{{ available_apps.json.response | default([])
+          | selectattr('appName', 'search', 'ThousandEyes|thousandeyes|TE', ignorecase=True)
+          | map(attribute='appId') | first | default('') }}"
+
+    - name: "Display TE app details"
+      ansible.builtin.debug:
+        msg: "ThousandEyes App ID: {{ te_app_id | default('Not found – check Catalyst Center') }}"
+
+    # ── Get device IDs for target switches ─────────────────────────────────
+    - name: "Get device inventory"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/network-device"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: device_inventory
+
+    - name: "Build device ID list for TE target switches"
+      ansible.builtin.set_fact:
+        te_target_devices: >-
+          {{ device_inventory.json.response
+             | selectattr('managementIpAddress', 'in', te_enterprise_switches | map(attribute='ip') | list)
+             | list }}
+
+    # ── Deploy TE Enterprise Agent via App Hosting ──────────────────────────
+    - name: "Deploy ThousandEyes Enterprise Agent via App Hosting workflow"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/app-hosting/application/{{ te_app_id }}/deploy"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          deviceList:
+            - deviceId: "{{ item.id }}"
+              networkInterface:
+                name: "GigabitEthernet1/0/0"
+                ipv4: "{{ item.managementIpAddress }}"
+              resourceProfile: "c1.large"
+        validate_certs: "{{ dnac_verify }}"
+        status_code: [200, 202]
+      loop: "{{ te_target_devices }}"
+      register: te_deploy_results
+      loop_control:
+        label: "Deploying TE to {{ item.hostname | default(item.managementIpAddress) }}"
+      when: te_app_id != ''
+
+    - name: "Display TE deployment task IDs"
+      ansible.builtin.debug:
+        msg: "Deployed to {{ item.item.hostname | default(item.item.managementIpAddress) }} – Task: {{ item.json.taskId | default('check DNAC') }}"
+      loop: "{{ te_deploy_results.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.hostname | default(item.item.managementIpAddress) | default('unknown') }}"
+      when: te_deploy_results is not skipped
+
+    # ── Wait for deployment and verify ─────────────────────────────────────
+    - name: "Poll App Hosting deployment status"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/app-hosting/application/{{ te_app_id }}/device/{{ item.id }}"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: deployment_status
+      until: deployment_status.json.response.status in ['DEPLOYED', 'FAILED', 'RUNNING']
+      retries: 20
+      delay: 30
+      loop: "{{ te_target_devices }}"
+      loop_control:
+        label: "Checking TE status on {{ item.hostname | default(item.managementIpAddress) }}"
+      when: te_app_id != ''
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PART B: Configure ThousandEyes Enterprise Agent Tests (via TE API)
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: "ThousandEyes Enterprise | Configure Network Tests via TE API"
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    te_api_url: "https://api.thousandeyes.com/v7"
+    te_token: "{{ vault_te_bearer_token }}"
+
+  tasks:
+    - name: "Get ThousandEyes account info"
+      ansible.builtin.uri:
+        url: "{{ te_api_url }}/account-groups"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ te_token }}"
+          Content-Type: application/json
+        status_code: 200
+      register: te_account_info
+      no_log: true
+
+    - name: "Display account groups"
+      ansible.builtin.debug:
+        msg: "Account Group: {{ item.accountGroupName }} | AID: {{ item.aid }}"
+      loop: "{{ te_account_info.json.accountGroups | default([]) }}"
+      loop_control:
+        label: "{{ item.accountGroupName | default('unknown') }}"
+
+    - name: "Set account group ID"
+      ansible.builtin.set_fact:
+        te_aid: "{{ te_account_info.json.accountGroups[0].aid | default('') }}"
+
+    - name: "Get registered Enterprise Agents"
+      ansible.builtin.uri:
+        url: "{{ te_api_url }}/agents?agentTypes=ENTERPRISE_CLUSTER"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ te_token }}"
+        status_code: 200
+      register: enterprise_agents
+
+    - name: "Display registered enterprise agents"
+      ansible.builtin.debug:
+        msg: "Agent: {{ item.agentName }} | IP: {{ item.ipAddresses | join(',') }} | Status: {{ item.agentState }}"
+      loop: "{{ enterprise_agents.json.agents | default([]) }}"
+      loop_control:
+        label: "{{ item.agentName | default('unknown') }}"
+
+    - name: "Extract enterprise agent IDs"
+      ansible.builtin.set_fact:
+        enterprise_agent_ids: "{{ enterprise_agents.json.agents | default([]) | map(attribute='agentId') | list }}"
+
+    - name: "Create HTTP Server test (branch to internet)"
+      ansible.builtin.uri:
+        url: "{{ te_api_url }}/tests/http-server"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ te_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          testName: "Branch-to-Webex-HTTP"
+          url: "https://www.webex.com"
+          interval: 120
+          agents: "{{ enterprise_agent_ids | map('community.general.dict_kv', 'agentId') | list }}"
+          alertsEnabled: true
+          httpTimeLimit: 5000
+          httpVersion: 2
+          followRedirects: true
+          verifyCertificate: true
+        status_code: [200, 201]
+      register: http_test
+      when: enterprise_agent_ids | length > 0
+
+    - name: "Create Path Visualization test (branch to HQ)"
+      ansible.builtin.uri:
+        url: "{{ te_api_url }}/tests/agent-to-server"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ te_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          testName: "Branch-to-HQ-Path"
+          server: "10.1.0.1"
+          port: 443
+          protocol: "TCP"
+          interval: 120
+          agents: "{{ enterprise_agent_ids | map('community.general.dict_kv', 'agentId') | list }}"
+          alertsEnabled: true
+        status_code: [200, 201]
+      register: path_test
+      when: enterprise_agent_ids | length > 0
+
+    - name: "Display created test IDs"
+      ansible.builtin.debug:
+        msg: >-
+          HTTP Test: {{ http_test.json.test.testId | default('N/A') }}
+          | Path Test: {{ path_test.json.test.testId | default('N/A') }}
+      when: enterprise_agent_ids | length > 0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PART C: Retrieve ThousandEyes Endpoint Agent Installer (via TE API)
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: "ThousandEyes Endpoint | Get Endpoint Agent Installer Info"
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    te_api_url: "https://api.thousandeyes.com/v7"
+    te_token: "{{ vault_te_bearer_token }}"
+
+  tasks:
+    - name: "Get Endpoint Agent download information"
+      ansible.builtin.uri:
+        url: "{{ te_api_url }}/endpoint-agents/downloads"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ te_token }}"
+        status_code: 200
+      register: endpoint_downloads
+      failed_when: false
+
+    - name: "Display endpoint agent download options"
+      ansible.builtin.debug:
+        msg: "Platform: {{ item.platform }} | Type: {{ item.type }} | URL: {{ item.downloadUrl }}"
+      loop: "{{ endpoint_downloads.json.downloads | default([]) }}"
+      loop_control:
+        label: "{{ item.platform | default('unknown') }}"
+
+    - name: "Find x86 MSI installer URL (required for lab)"
+      ansible.builtin.set_fact:
+        endpoint_msi_url: "{{ endpoint_downloads.json.downloads | default([])
+          | selectattr('platform', 'equalto', 'Windows')
+          | selectattr('type', 'search', 'msi|x86', ignorecase=True)
+          | map(attribute='downloadUrl') | first | default('') }}"
+
+    - name: "Display x86 MSI installer URL"
+      ansible.builtin.debug:
+        msg: >-
+          Endpoint Agent x86 MSI URL: {{ endpoint_msi_url | default('Not available via API – download manually from TE portal') }}
+          NOTE: Use x86 client only – do NOT use x64 in this lab environment.
+
+    - name: "Get existing endpoint agents"
+      ansible.builtin.uri:
+        url: "{{ te_api_url }}/endpoint-agents"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ te_token }}"
+        status_code: 200
+      register: endpoint_agents
+      failed_when: false
+
+    - name: "Display registered endpoint agents"
+      ansible.builtin.debug:
+        msg: "Endpoint: {{ item.computerName }} | OS: {{ item.osVersion }} | Status: {{ item.status }}"
+      loop: "{{ endpoint_agents.json.endpointAgents | default([]) }}"
+      loop_control:
+        label: "{{ item.computerName | default('unknown') }}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PART D: Configure Dynamic Session Test for Webex on Endpoint Agents
+# ─────────────────────────────────────────────────────────────────────────────
+
+- name: "ThousandEyes Endpoint | Configure Webex Dynamic Session Test"
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    te_api_url: "https://api.thousandeyes.com/v7"
+    te_token: "{{ vault_te_bearer_token }}"
+
+  tasks:
+    - name: "Get endpoint agent list"
+      ansible.builtin.uri:
+        url: "{{ te_api_url }}/endpoint-agents"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ te_token }}"
+        status_code: 200
+      register: ep_agents
+      failed_when: false
+
+    - name: "Get endpoint agent IDs"
+      ansible.builtin.set_fact:
+        ep_agent_ids: "{{ ep_agents.json.endpointAgents | default([]) | map(attribute='id') | list }}"
+
+    - name: "Create Webex Dynamic Session test"
+      ansible.builtin.uri:
+        url: "{{ te_api_url }}/endpoint-tests/dynamic-tests"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ te_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          testName: "Webex-Dynamic-Session"
+          interval: 120
+          application: "WEBEX"
+          agentSelectorConfig:
+            agentSelectorType: "LIST_OF_AGENTS"
+            agentIds: "{{ ep_agent_ids }}"
+          alertsEnabled: true
+          enabled: true
+        status_code: [200, 201]
+      register: dynamic_test
+      when: ep_agent_ids | length > 0
+      failed_when: false
+
+    - name: "Display Dynamic Session test result"
+      ansible.builtin.debug:
+        msg: "Webex Dynamic Test ID: {{ dynamic_test.json.test.testId | default('See TE portal') }}"
+      when: ep_agent_ids | length > 0

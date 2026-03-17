@@ -1,0 +1,309 @@
+---
+# =============================================================================
+# Playbook: Task 1 – Convert ISR 4331 to Cisco SD-WAN (Controller) Mode
+# =============================================================================
+# Lab Reference : Task 1 (Preparation) – Convert a router to SD-WAN mode
+# Collections   : cisco.ios, cisco.sdwan (catalystwan)
+# Target Hosts  : isr4331_branch (autonomous mode), sdwan_manager (vManage)
+# Run            : ansible-playbook -i inventory/hosts.yml playbooks/01_sdwan_router_conversion.yml
+#                  --vault-password-file .vault_pass
+# =============================================================================
+
+- name: "TASK 1 | Collect ISR 4331 Serial Number (Autonomous Mode)"
+  hosts: isr4331_branch
+  gather_facts: false
+  vars:
+    ansible_network_os: cisco.ios.ios
+    ansible_connection: network_cli
+
+  tasks:
+    - name: "Collect router inventory to identify serial number"
+      cisco.ios.ios_command:
+        commands:
+          - show inventory
+      register: router_inventory
+
+    - name: "Display inventory output"
+      ansible.builtin.debug:
+        var: router_inventory.stdout_lines
+
+    - name: "Parse router processor serial number"
+      ansible.builtin.set_fact:
+        isr_serial_number: "{{ router_inventory.stdout[0]
+          | regex_search('ISR4331.*?\\nSN: (\\S+)', '\\1', multiline=True)
+          | first | default('UNKNOWN') }}"
+
+    - name: "Display extracted serial number"
+      ansible.builtin.debug:
+        msg: "ISR4331 Router Processor S/N: {{ isr_serial_number }}"
+
+    - name: "Save serial number to host fact for later plays"
+      ansible.builtin.set_fact:
+        cacheable: true
+        router_sn: "{{ isr_serial_number }}"
+
+# ─── Phase 2: Upload WAN Edge Serial to SD-WAN Manager ───────────────────────
+- name: "TASK 1 | Add WAN Edge Serial to SD-WAN Manager (vManage)"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vmanage_host: "{{ sdwan_manager_host }}"
+    vmanage_user: "{{ sdwan_manager_user }}"
+    vmanage_pass: "{{ vault_sdwan_manager_password }}"
+    # Serial number collected from previous play
+    wan_edge_sn: "{{ hostvars['isr4331_branch']['router_sn'] | default('PLACEHOLDER_SN') }}"
+
+  tasks:
+    - name: "Authenticate to SD-WAN Manager and obtain session cookie"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/j_security_check"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          j_username: "{{ vmanage_user }}"
+          j_password: "{{ vmanage_pass }}"
+        validate_certs: false
+        status_code: 200
+        return_content: true
+      register: vmanage_auth
+      no_log: true
+
+    - name: "Retrieve XSRF token"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/client/token"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+        return_content: true
+      register: xsrf_token
+
+    - name: "Upload WAN Edge serial number to vManage"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/system/device/vedges"
+        method: POST
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+          X-XSRF-TOKEN: "{{ xsrf_token.content }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          serialNumber: "{{ wan_edge_sn }}"
+          personality: "vedge"
+          deviceType: "vedge-ISR-4331"
+        validate_certs: false
+        status_code: [200, 201]
+      register: upload_result
+
+    - name: "Display upload result"
+      ansible.builtin.debug:
+        var: upload_result.json
+
+# ─── Phase 3: Configure ISR for SD-WAN Controller Mode ───────────────────────
+- name: "TASK 1 | Configure ISR 4331 – Controller Mode & Bootstrap"
+  hosts: isr4331_branch
+  gather_facts: false
+
+  vars:
+    sdwan_org_name: "dCloud-SDWAN-Lab"
+    vbond_address: "198.18.133.11"
+    wan_interface: "GigabitEthernet0/0/0"
+    wan_ip: "198.18.133.20"
+    wan_mask: "255.255.255.0"
+    wan_gateway: "198.18.133.1"
+    mgmt_interface: "GigabitEthernet0"
+    mgmt_ip: "198.18.128.20"
+    mgmt_mask: "255.255.255.0"
+    mgmt_gateway: "198.18.128.1"
+    system_ip: "172.30.255.10"
+    site_id: 105
+    ntp_server: "198.18.128.1"
+
+  tasks:
+    - name: "Enable SD-WAN / controller mode"
+      cisco.ios.ios_config:
+        lines:
+          - "sdwan"
+        parents: []
+      register: sdwan_mode_result
+      failed_when: false    # command may vary by IOS-XE version
+
+    - name: "Configure system parameters (SD-WAN global)"
+      cisco.ios.ios_config:
+        lines:
+          - "system-ip {{ system_ip }}"
+          - "site-id {{ site_id }}"
+          - "organization-name {{ sdwan_org_name }}"
+          - "vbond {{ vbond_address }}"
+        parents: "sdwan"
+
+    - name: "Configure WAN transport interface (VPN 0)"
+      cisco.ios.ios_config:
+        lines:
+          - "ip address {{ wan_ip }} {{ wan_mask }}"
+          - "no shutdown"
+          - "sdwan"
+        parents: "interface {{ wan_interface }}"
+
+    - name: "Configure SD-WAN tunnel on transport interface"
+      cisco.ios.ios_config:
+        lines:
+          - "encapsulation ipsec"
+          - "color biz-internet"
+          - "allow-service all"
+          - "no allow-service bgp"
+          - "allow-service dhcp"
+          - "allow-service dns"
+          - "allow-service icmp"
+          - "allow-service sshd"
+          - "allow-service netconf"
+          - "allow-service ntp"
+          - "allow-service ospf"
+          - "allow-service stun"
+        parents:
+          - "interface {{ wan_interface }}"
+          - "tunnel-interface"
+
+    - name: "Configure management VPN 512 interface"
+      cisco.ios.ios_config:
+        lines:
+          - "ip address {{ mgmt_ip }} {{ mgmt_mask }}"
+          - "no shutdown"
+        parents: "interface {{ mgmt_interface }}"
+
+    - name: "Configure NTP server"
+      cisco.ios.ios_config:
+        lines:
+          - "ntp server {{ ntp_server }}"
+
+    - name: "Set VPN 0 default route"
+      cisco.ios.ios_config:
+        lines:
+          - "ip route 0.0.0.0 0.0.0.0 {{ wan_gateway }}"
+
+    - name: "Save router configuration"
+      cisco.ios.ios_command:
+        commands:
+          - write memory
+      register: save_result
+
+    - name: "Display save result"
+      ansible.builtin.debug:
+        var: save_result.stdout_lines
+
+# ─── Phase 4: Attach Bootstrap Template in vManage ───────────────────────────
+- name: "TASK 1 | Attach Bootstrap Template in SD-WAN Manager"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vmanage_host: "{{ sdwan_manager_host }}"
+    vmanage_user: "{{ sdwan_manager_user }}"
+    vmanage_pass: "{{ vault_sdwan_manager_password }}"
+    wan_edge_sn: "{{ hostvars['isr4331_branch']['router_sn'] | default('PLACEHOLDER_SN') }}"
+    bootstrap_template_name: "BRANCH-ISR4331-Bootstrap"
+
+  tasks:
+    - name: "Re-authenticate to SD-WAN Manager"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/j_security_check"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          j_username: "{{ vmanage_user }}"
+          j_password: "{{ vmanage_pass }}"
+        validate_certs: false
+        status_code: 200
+      register: vmanage_auth
+      no_log: true
+
+    - name: "Get XSRF token"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/client/token"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: xsrf_token
+
+    - name: "Retrieve device template ID for bootstrap template"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/template/device"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: template_list
+
+    - name: "Extract bootstrap template ID"
+      ansible.builtin.set_fact:
+        bootstrap_template_id: "{{ template_list.json.data
+          | selectattr('templateName', 'equalto', bootstrap_template_name)
+          | map(attribute='templateId')
+          | first | default('NOT_FOUND') }}"
+
+    - name: "Fail if bootstrap template not found"
+      ansible.builtin.fail:
+        msg: "Bootstrap template '{{ bootstrap_template_name }}' not found in vManage!"
+      when: bootstrap_template_id == 'NOT_FOUND'
+
+    - name: "Get device UUID for the WAN Edge"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/system/device/vedges?model=vedge-ISR-4331"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: vedge_list
+
+    - name: "Extract device UUID"
+      ansible.builtin.set_fact:
+        device_uuid: "{{ vedge_list.json.data
+          | selectattr('serialNumber', 'equalto', wan_edge_sn)
+          | map(attribute='uuid')
+          | first | default('NOT_FOUND') }}"
+
+    - name: "Attach bootstrap device template to WAN Edge"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/template/device/config/attachvedge"
+        method: POST
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+          X-XSRF-TOKEN: "{{ xsrf_token.content }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          deviceTemplateList:
+            - templateId: "{{ bootstrap_template_id }}"
+              device:
+                - csv-status: "complete"
+                  csv-deviceId: "{{ device_uuid }}"
+                  csv-deviceIP: "172.30.255.10"
+                  csv-host-name: "ISR4331-Branch"
+                  "//system/host-name": "ISR4331-Branch"
+                  "//system/system-ip": "172.30.255.10"
+                  "//system/site-id": "105"
+        validate_certs: false
+        status_code: 200
+      register: attach_result
+
+    - name: "Display template attachment result"
+      ansible.builtin.debug:
+        msg: "Template attach task ID: {{ attach_result.json.id | default('check vManage UI') }}"
+
+    - name: "Wait for template attachment to complete (up to 15 minutes)"
+      ansible.builtin.uri:
+        url: "https://{{ vmanage_host }}/dataservice/device/action/status/{{ attach_result.json.id }}"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: false
+      register: attach_status
+      until: attach_status.json.summary.status in ['done', 'failure']
+      retries: 30
+      delay: 30
+      when: attach_result.json.id is defined
+
+    - name: "Report attachment status"
+      ansible.builtin.debug:
+        msg: "Template attachment status: {{ attach_status.json.summary.status }}"
+      when: attach_result.json.id is defined

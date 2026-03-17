@@ -1,0 +1,254 @@
+---
+# =============================================================================
+# Playbook: Task – Configure AP Ports Using Catalyst Center CLI Templates
+# =============================================================================
+# Lab Reference : Configure AP port using templates (SDA Wireless)
+# Purpose       : Create a CLI template in Catalyst Center for AP switchports
+#                 (Gi1/0/2 on each leaf) and deploy it. AP ports need to be
+#                 trunks with native VLAN 10 for flex-connect wireless over SDA.
+# Collections   : cisco.dnac, URI module
+# Target Hosts  : localhost (DNAC REST API), fabric_switches (direct IOS)
+# Run            : ansible-playbook -i inventory/hosts.yml \
+#                    playbooks/06_ap_port_templates.yml \
+#                    --vault-password-file .vault_pass
+# =============================================================================
+
+- name: "AP Ports | Create and Deploy Catalyst Center CLI Template for AP Switchports"
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    dnac_host: "198.18.5.100"
+    dnac_port: 443
+    dnac_username: admin
+    dnac_password: "{{ vault_dnac_password }}"
+    dnac_verify: false
+
+    template_name: "AP-Switchport-FlexConnect"
+    template_project: "Lab-Templates"
+    ap_native_vlan: 10
+    ap_allowed_vlans: "10,101,102"
+
+    # Per-switch AP port assignments from lab guide
+    leaf1_ap_interface: "GigabitEthernet1/0/2"
+    leaf2_ap_interface: "GigabitEthernet1/0/2"
+
+    # Switches that need the AP template deployed
+    ap_switch_ips:
+      - "172.30.255.1"
+      - "172.30.255.2"
+
+    site_hierarchy: "Global/dCloud/Site 105"
+
+  tasks:
+    # ── Authentication ──────────────────────────────────────────────────────
+    - name: "Authenticate to Catalyst Center"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/system/api/v1/auth/token"
+        method: POST
+        user: "{{ dnac_username }}"
+        password: "{{ dnac_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ dnac_verify }}"
+        status_code: 200
+      register: dnac_auth
+      no_log: true
+
+    - name: "Set DNAC token"
+      ansible.builtin.set_fact:
+        dnac_token: "{{ dnac_auth.json.Token }}"
+
+    # ── Step 1: Create or locate the template project ───────────────────────
+    - name: "Get existing template projects"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/template-programmer/project"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: existing_projects
+
+    - name: "Check if Lab-Templates project exists"
+      ansible.builtin.set_fact:
+        lab_project_id: "{{ existing_projects.json
+          | selectattr('name', 'equalto', template_project)
+          | map(attribute='id') | first | default('') }}"
+
+    - name: "Create template project if it does not exist"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/template-programmer/project"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          name: "{{ template_project }}"
+          description: "Lab CLI templates for automated device configuration"
+        validate_certs: "{{ dnac_verify }}"
+        status_code: [200, 201, 202]
+      register: create_project
+      when: lab_project_id == ''
+
+    - name: "Set project ID from creation result"
+      ansible.builtin.set_fact:
+        lab_project_id: "{{ create_project.json.response.id | default(lab_project_id) }}"
+      when: lab_project_id == '' and create_project is not skipped
+
+    - name: "Display project ID"
+      ansible.builtin.debug:
+        msg: "Using template project ID: {{ lab_project_id }}"
+
+    # ── Step 2: Create the AP switchport CLI template ───────────────────────
+    - name: "Create AP switchport CLI template"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/template-programmer/project/{{ lab_project_id }}/template"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          name: "{{ template_name }}"
+          description: "Configures AP switchports as flex-connect trunks with native VLAN {{ ap_native_vlan }}"
+          deviceTypes:
+            - productFamily: "Switches and Hubs"
+          softwareType: "IOS-XE"
+          softwareVariant: "XE"
+          templateContent: |
+            interface $AP_INTERFACE
+             description AP-FlexConnect
+             switchport trunk native vlan {{ ap_native_vlan }}
+             switchport trunk allowed vlan {{ ap_allowed_vlans }}
+             switchport mode trunk
+             spanning-tree portfast trunk
+             no shutdown
+          language: "VELOCITY"
+          templateParams:
+            - parameterName: "AP_INTERFACE"
+              dataType: "STRING"
+              defaultValue: "GigabitEthernet1/0/2"
+              description: "Interface name for the AP switchport"
+              required: true
+        validate_certs: "{{ dnac_verify }}"
+        status_code: [200, 201, 202]
+      register: create_template
+      failed_when: >
+        create_template.status not in [200, 201, 202]
+        and 'already' not in (create_template.json.response.message | default('') | lower)
+
+    - name: "Display template creation result"
+      ansible.builtin.debug:
+        var: create_template.json
+
+    - name: "Get template ID"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/template-programmer/project/{{ lab_project_id }}/template"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: project_templates
+
+    - name: "Extract AP template ID"
+      ansible.builtin.set_fact:
+        ap_template_id: "{{ project_templates.json
+          | selectattr('name', 'equalto', template_name)
+          | map(attribute='templateId') | first }}"
+
+    # ── Step 3: Version / commit the template ───────────────────────────────
+    - name: "Version/commit the CLI template"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/template-programmer/template/version"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          templateId: "{{ ap_template_id }}"
+          comments: "Initial version – AP flex-connect trunk config"
+        validate_certs: "{{ dnac_verify }}"
+        status_code: [200, 201, 202]
+      register: commit_result
+
+    - name: "Display commit result"
+      ansible.builtin.debug:
+        var: commit_result.json
+
+    # ── Step 4: Deploy template to leaf1 and leaf2 ──────────────────────────
+    - name: "Get device IDs for deployment targets"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/network-device"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: all_devices
+
+    - name: "Build target device list for template deployment"
+      ansible.builtin.set_fact:
+        target_devices: >-
+          {{ all_devices.json.response
+             | selectattr('managementIpAddress', 'in', ap_switch_ips)
+             | list }}
+
+    - name: "Deploy AP template to leaf1"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/template-programmer/template/deploy"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          forcePushTemplate: true
+          templateId: "{{ ap_template_id }}"
+          targetInfo:
+            - id: "{{ item.id }}"
+              type: "MANAGED_DEVICE_IP"
+              params:
+                AP_INTERFACE: "GigabitEthernet1/0/2"
+        validate_certs: "{{ dnac_verify }}"
+        status_code: [200, 202]
+      loop: "{{ target_devices }}"
+      register: deploy_results
+      loop_control:
+        label: "Deploying to {{ item.managementIpAddress }}"
+
+    - name: "Display deployment task IDs"
+      ansible.builtin.debug:
+        msg: "Deployed to {{ item.item.managementIpAddress }} – Task: {{ item.json.deploymentId | default(item.json.taskId) | default('check DNAC') }}"
+      loop: "{{ deploy_results.results }}"
+      loop_control:
+        label: "{{ item.item.managementIpAddress }}"
+
+    # ── Step 5: Verify AP ports are now correct (direct IOS check) ──────────
+- name: "AP Ports | Verify AP port configuration on switches"
+  hosts: fabric_switches
+  gather_facts: false
+  vars:
+    ap_interface: "GigabitEthernet1/0/2"
+
+  tasks:
+    - name: "Show interface {{ ap_interface }} switchport status"
+      cisco.ios.ios_command:
+        commands:
+          - "show interfaces {{ ap_interface }} switchport"
+          - "show interfaces {{ ap_interface }} status"
+      register: ap_port_status
+      when: inventory_hostname in ['leaf1', 'leaf2']
+
+    - name: "Display AP port configuration"
+      ansible.builtin.debug:
+        var: ap_port_status.stdout_lines
+      when: inventory_hostname in ['leaf1', 'leaf2']
+
+    - name: "Verify AP port is trunk mode with correct native VLAN"
+      ansible.builtin.assert:
+        that:
+          - "'Trunk' in ap_port_status.stdout[0]"
+          - "'10' in ap_port_status.stdout[0]"
+        fail_msg: "AP port {{ ap_interface }} is NOT correctly configured as a trunk with native VLAN 10"
+        success_msg: "AP port {{ ap_interface }} is correctly configured as trunk with native VLAN 10"
+      when: inventory_hostname in ['leaf1', 'leaf2']

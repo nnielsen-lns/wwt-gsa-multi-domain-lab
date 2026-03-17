@@ -1,0 +1,300 @@
+---
+# =============================================================================
+# Playbook: Task – BGP EVPN Fabric Configuration
+# =============================================================================
+# Lab Reference : Task - BGP EVPN Fabric
+# Purpose       : Configure BGP EVPN overlay on three Catalyst 9300 switches.
+#                 Includes VRF definitions, L3VNI, VTEP interfaces, BGP EVPN
+#                 address-family, and VNI-to-VLAN mappings for IOT and PROD
+#                 tenant networks.
+# Collections   : cisco.ios
+# Target Hosts  : fabric_switches (leaf1, leaf2, leaf3)
+# Run            : ansible-playbook -i inventory/hosts.yml \
+#                    playbooks/07_bgp_evpn_fabric.yml \
+#                    --vault-password-file .vault_pass
+# =============================================================================
+
+- name: "BGP EVPN | Configure VRF and Tenant Definitions on All Switches"
+  hosts: fabric_switches
+  gather_facts: false
+
+  vars:
+    # Shared BGP and EVPN settings
+    bgp_asn: 65000
+    route_reflector_ip: "172.30.255.3"   # leaf3 acts as border/RR
+
+    # VRFs from lab guide
+    vrfs:
+      - name: "IOT"
+        rd_suffix: "102"
+        import_rt: "65000:102"
+        export_rt: "65000:102"
+        l3vni: 50102
+        vlan_id: 3502
+      - name: "PROD"
+        rd_suffix: "101"
+        import_rt: "65000:101"
+        export_rt: "65000:101"
+        l3vni: 50101
+        vlan_id: 3501
+
+    # L2 VNI mappings (per VLAN)
+    l2vnis:
+      - vlan_id: 101
+        vni: 10101
+        vn_name: "PROD_DATA"
+      - vlan_id: 102
+        vni: 10102
+        vn_name: "IOT_DATA"
+
+    # OSPF underlay
+    ospf_process: 1
+    ospf_area: 0
+
+  tasks:
+    # ── Step 1: Configure VRF definitions ──────────────────────────────────
+    - name: "Configure VRF definitions (IOT and PROD)"
+      cisco.ios.ios_config:
+        lines:
+          - "vrf definition {{ item.name }}"
+          - " rd {{ ansible_host }}:{{ item.rd_suffix }}"
+          - " route-target export {{ item.export_rt }}"
+          - " route-target import {{ item.import_rt }}"
+          - " !"
+          - " address-family ipv4"
+          - "  route-target export {{ item.export_rt }}"
+          - "  route-target import {{ item.import_rt }}"
+          - " exit-address-family"
+          - " !"
+          - " address-family ipv6"
+          - "  route-target export {{ item.export_rt }}"
+          - "  route-target import {{ item.import_rt }}"
+          - " exit-address-family"
+      loop: "{{ vrfs }}"
+      loop_control:
+        label: "VRF {{ item.name }}"
+
+    # ── Step 2: Configure L3VNI VLANs (internal VLANs for VRF routing) ────
+    - name: "Create L3VNI VLANs"
+      cisco.ios.ios_config:
+        lines:
+          - "vlan {{ item.vlan_id }}"
+          - " name {{ item.name }}_L3VNI"
+          - " state active"
+        parents: []
+      loop: "{{ vrfs }}"
+      loop_control:
+        label: "L3VNI VLAN {{ item.vlan_id }} for VRF {{ item.name }}"
+
+    # ── Step 3: Configure data-plane L2VNI VLANs ───────────────────────────
+    - name: "Create data-plane L2VNI VLANs"
+      cisco.ios.ios_config:
+        lines:
+          - "vlan {{ item.vlan_id }}"
+          - " name {{ item.vn_name }}"
+          - " state active"
+        parents: []
+      loop: "{{ l2vnis }}"
+      loop_control:
+        label: "L2VNI VLAN {{ item.vlan_id }}"
+
+    # ── Step 4: Configure VXLAN VTEP interface (NVE) ───────────────────────
+    - name: "Enable VXLAN feature (nv overlay)"
+      cisco.ios.ios_config:
+        lines:
+          - "l2vpn evpn"
+
+    - name: "Configure NVE (VTEP) interface"
+      cisco.ios.ios_config:
+        lines:
+          - "source-interface Loopback1"
+          - "host-reachability protocol bgp"
+        parents: "interface nve1"
+
+    - name: "Add L2VNI members to NVE"
+      cisco.ios.ios_config:
+        lines:
+          - "member vni {{ item.vni }}"
+          - " ingress-replication protocol bgp"
+        parents: "interface nve1"
+      loop: "{{ l2vnis }}"
+      loop_control:
+        label: "NVE member VNI {{ item.vni }} (VLAN {{ item.vlan_id }})"
+
+    - name: "Add L3VNI members to NVE"
+      cisco.ios.ios_config:
+        lines:
+          - "member vni {{ item.l3vni }} vrf {{ item.name }}"
+        parents: "interface nve1"
+      loop: "{{ vrfs }}"
+      loop_control:
+        label: "L3VNI {{ item.l3vni }} for VRF {{ item.name }}"
+
+    - name: "Activate NVE interface"
+      cisco.ios.ios_config:
+        lines:
+          - "no shutdown"
+        parents: "interface nve1"
+
+    # ── Step 5: Configure SVI interfaces per L2VNI ─────────────────────────
+    - name: "Configure SVI for L2VNIs"
+      cisco.ios.ios_config:
+        lines:
+          - "description {{ item.vn_name }} L2VNI SVI"
+          - "no ip address"
+          - "no shutdown"
+        parents: "interface Vlan{{ item.vlan_id }}"
+      loop: "{{ l2vnis }}"
+      loop_control:
+        label: "SVI Vlan{{ item.vlan_id }}"
+
+    # ── Step 6: Configure IRB SVIs for L3VNI (anycast GW) ─────────────────
+    - name: "Configure L3VNI SVIs (IRB)"
+      cisco.ios.ios_config:
+        lines:
+          - "description {{ item.name }} VRF L3VNI IRB"
+          - "vrf forwarding {{ item.name }}"
+          - "ip address 10.{{ (loop.index + 100) }}.255.254 255.255.255.0"
+          - "no shutdown"
+        parents: "interface Vlan{{ item.vlan_id }}"
+      loop: "{{ vrfs }}"
+      loop_control:
+        label: "L3VNI SVI Vlan{{ item.vlan_id }} VRF {{ item.name }}"
+
+    # ── Step 7: Associate VLANs with VNIs in EVPN ──────────────────────────
+    - name: "Configure L2VPN EVPN instance per L2VNI VLAN"
+      cisco.ios.ios_config:
+        lines:
+          - "vni {{ item.vni }}"
+          - " rd auto"
+          - " route-target import auto"
+          - " route-target export auto"
+        parents:
+          - "l2vpn evpn instance {{ item.vlan_id }} vlan-based"
+      loop: "{{ l2vnis }}"
+      loop_control:
+        label: "EVPN instance for VNI {{ item.vni }}"
+
+    - name: "Associate VLANs with EVPN instances"
+      cisco.ios.ios_config:
+        lines:
+          - "encapsulation dot1q {{ item.vlan_id }}"
+          - "service-instance ethernet {{ item.vlan_id }}"
+          - " encapsulation dot1q {{ item.vlan_id }}"
+          - " rewrite ingress tag pop 1 symmetric"
+        parents:
+          - "interface Vlan{{ item.vlan_id }}"
+      loop: "{{ l2vnis }}"
+      loop_control:
+        label: "EVPN assoc VLAN {{ item.vlan_id }}"
+
+    # ── Step 8: Configure BGP for EVPN ─────────────────────────────────────
+    - name: "Configure BGP base process"
+      cisco.ios.ios_config:
+        lines:
+          - "bgp log-neighbor-changes"
+          - "bgp graceful-restart"
+        parents: "router bgp {{ bgp_asn }}"
+
+    - name: "Configure BGP neighbors (loopback peering to leaf3/RR)"
+      cisco.ios.ios_config:
+        lines:
+          - "remote-as {{ bgp_asn }}"
+          - "update-source Loopback0"
+          - "send-community both"
+        parents:
+          - "router bgp {{ bgp_asn }}"
+          - "neighbor {{ route_reflector_ip }}"
+      when: ansible_host != route_reflector_ip
+
+    - name: "Configure BGP L2VPN EVPN address-family"
+      cisco.ios.ios_config:
+        lines:
+          - "neighbor {{ route_reflector_ip }} activate"
+          - "neighbor {{ route_reflector_ip }} send-community extended"
+          - "advertise-all-vni"
+          - "autovnid"
+        parents:
+          - "router bgp {{ bgp_asn }}"
+          - "address-family l2vpn evpn"
+      when: ansible_host != route_reflector_ip
+
+    - name: "Configure BGP IPv4 VRF address-families"
+      cisco.ios.ios_config:
+        lines:
+          - "redistribute connected"
+          - "redistribute static"
+        parents:
+          - "router bgp {{ bgp_asn }}"
+          - "address-family ipv4 vrf {{ item.name }}"
+      loop: "{{ vrfs }}"
+      loop_control:
+        label: "BGP VRF AF {{ item.name }}"
+
+    # ── Route Reflector config on leaf3 only ─────────────────────────────
+    - name: "Configure leaf3 as BGP Route Reflector"
+      cisco.ios.ios_config:
+        lines:
+          - "route-reflector-client"
+        parents:
+          - "router bgp {{ bgp_asn }}"
+          - "address-family l2vpn evpn"
+          - "neighbor {{ hostvars[item]['ansible_host'] }}"
+      loop: "{{ groups['fabric_switches'] | difference([inventory_hostname]) }}"
+      when: ansible_host == route_reflector_ip
+      loop_control:
+        label: "RR client: {{ item }}"
+
+    # ── Step 9: Save configuration ─────────────────────────────────────────
+    - name: "Save configuration"
+      cisco.ios.ios_command:
+        commands:
+          - write memory
+      register: save_result
+
+# ── Verification play ─────────────────────────────────────────────────────
+- name: "BGP EVPN | Verify Fabric Control Plane"
+  hosts: fabric_switches
+  gather_facts: false
+
+  tasks:
+    - name: "Verify BGP summary"
+      cisco.ios.ios_command:
+        commands:
+          - "show bgp l2vpn evpn summary"
+      register: bgp_evpn_summary
+
+    - name: "Display BGP EVPN summary"
+      ansible.builtin.debug:
+        var: bgp_evpn_summary.stdout_lines
+
+    - name: "Verify NVE peers (VTEP adjacencies)"
+      cisco.ios.ios_command:
+        commands:
+          - "show nve peers"
+      register: nve_peers
+
+    - name: "Display NVE peers"
+      ansible.builtin.debug:
+        var: nve_peers.stdout_lines
+
+    - name: "Verify EVPN route table"
+      cisco.ios.ios_command:
+        commands:
+          - "show bgp l2vpn evpn"
+      register: evpn_routes
+
+    - name: "Display EVPN routes (first 50 lines)"
+      ansible.builtin.debug:
+        msg: "{{ evpn_routes.stdout_lines[0][:50] }}"
+
+    - name: "Verify VRF routing tables"
+      cisco.ios.ios_command:
+        commands:
+          - "show ip route vrf IOT"
+          - "show ip route vrf PROD"
+      register: vrf_routes
+
+    - name: "Display VRF routes"
+      ansible.builtin.debug:
+        var: vrf_routes.stdout_lines

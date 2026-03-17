@@ -1,0 +1,275 @@
+---
+# =============================================================================
+# Playbook: Task – Configure Software Defined Access (SDA) Fabric
+# =============================================================================
+# Lab Reference : Task - Configure Software Defined Access
+# Purpose       : Create the SDA fabric site in Catalyst Center, add fabric
+#                 nodes (leaf switches), configure virtual networks (VRFs),
+#                 SGT policies, and IP pools for macro-segmentation.
+# Collections   : cisco.dnac, URI module
+# Target Hosts  : localhost (Catalyst Center REST API)
+# Run            : ansible-playbook -i inventory/hosts.yml \
+#                    playbooks/05_sda_fabric_configuration.yml \
+#                    --vault-password-file .vault_pass
+# =============================================================================
+
+- name: "SDA Fabric | Configure Site 105 Software Defined Access"
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    dnac_host: "198.18.5.100"
+    dnac_port: 443
+    dnac_username: admin
+    dnac_password: "{{ vault_dnac_password }}"
+    dnac_verify: false
+
+    site_name: "Site 105"
+    site_hierarchy: "Global/dCloud/Site 105"
+
+    # Fabric nodes (C9300 switches)
+    fabric_edge_nodes:
+      - ip: "172.30.255.1"
+        hostname: "leaf1"
+        roles: ["EDGE_NODE"]
+      - ip: "172.30.255.2"
+        hostname: "leaf2"
+        roles: ["EDGE_NODE"]
+      - ip: "172.30.255.3"
+        hostname: "leaf3"
+        roles: ["EDGE_NODE", "BORDER_NODE", "CONTROL_PLANE_NODE"]
+
+    # Virtual Networks (macro-segmentation VRFs)
+    virtual_networks:
+      - vn_name: "PROD_VN"
+        vlan_id: 101
+        ip_pool: "10.101.0.0/16"
+        gateway: "10.101.255.254"
+        dhcp_server: "198.18.128.1"
+        scalable_group_tag: "Employees"
+      - vn_name: "IOT_VN"
+        vlan_id: 102
+        ip_pool: "10.102.0.0/16"
+        gateway: "10.102.255.254"
+        dhcp_server: "198.18.128.1"
+        scalable_group_tag: "IoT_Devices"
+
+    # SGT (Scalable Group Tags) for micro-segmentation
+    scalable_groups:
+      - name: "Employees"
+        tag: 2
+        description: "PROD employee workstations"
+      - name: "IoT_Devices"
+        tag: 4
+        description: "IoT sensor and controller devices"
+      - name: "Servers"
+        tag: 5
+        description: "Internal servers"
+
+  tasks:
+    # ── Authentication ──────────────────────────────────────────────────────
+    - name: "Authenticate to Catalyst Center"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/system/api/v1/auth/token"
+        method: POST
+        user: "{{ dnac_username }}"
+        password: "{{ dnac_password }}"
+        force_basic_auth: true
+        validate_certs: "{{ dnac_verify }}"
+        status_code: 200
+      register: dnac_auth
+      no_log: true
+
+    - name: "Store DNAC token"
+      ansible.builtin.set_fact:
+        dnac_token: "{{ dnac_auth.json.Token }}"
+
+    # ── Step 1: Create the Fabric Site ─────────────────────────────────────
+    - name: "Get site ID for Site 105"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/site?name={{ site_name | urlencode }}"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: site_info
+
+    - name: "Set site ID"
+      ansible.builtin.set_fact:
+        site_id: "{{ site_info.json.response[0].id }}"
+
+    - name: "Create SDA fabric site (Site 105)"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/business/sda/fabric-site"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          fabricName: "Site105-Fabric"
+          siteNameHierarchy: "{{ site_hierarchy }}"
+          fabricType: "FABRIC_SITE"
+        validate_certs: "{{ dnac_verify }}"
+        status_code: [200, 202]
+      register: fabric_site_result
+      failed_when: >
+        fabric_site_result.status not in [200, 202]
+        and 'already' not in (fabric_site_result.json.description | default('') | lower)
+
+    - name: "Display fabric site creation result"
+      ansible.builtin.debug:
+        var: fabric_site_result.json
+
+    # ── Step 2: Add fabric nodes (edge + control plane + border) ────────────
+    - name: "Add C9300 switches as fabric edge nodes"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/business/sda/fabric-node"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          siteNameHierarchy: "{{ site_hierarchy }}"
+          deviceManagementIpAddress: "{{ item.ip }}"
+          roles: "{{ item.roles }}"
+        validate_certs: "{{ dnac_verify }}"
+        status_code: [200, 202]
+      loop: "{{ fabric_edge_nodes }}"
+      register: add_nodes_result
+      loop_control:
+        label: "Adding {{ item.hostname }} ({{ item.ip }}) – roles: {{ item.roles | join(', ') }}"
+      failed_when: >
+        add_nodes_result.status not in [200, 202]
+        and 'already' not in (add_nodes_result.json.description | default('') | lower)
+
+    - name: "Display fabric node add results"
+      ansible.builtin.debug:
+        msg: "Node {{ item.item.hostname }}: {{ item.json.description | default(item.json.status) }}"
+      loop: "{{ add_nodes_result.results }}"
+      loop_control:
+        label: "{{ item.item.hostname }}"
+
+    # ── Step 3: Create Virtual Networks (VRFs) ──────────────────────────────
+    - name: "Create virtual networks in SDA fabric"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/business/sda/virtual-network"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          virtualNetworkName: "{{ item.vn_name }}"
+          siteNameHierarchy: "{{ site_hierarchy }}"
+          isLayer2Only: false
+          vlanId: "{{ item.vlan_id }}"
+          trafficType: "DATA"
+          scalableGroupName: "{{ item.scalable_group_tag }}"
+          isDefaultLayer2: false
+          isResourceGuest: false
+        validate_certs: "{{ dnac_verify }}"
+        status_code: [200, 202]
+      loop: "{{ virtual_networks }}"
+      register: vn_creation_result
+      loop_control:
+        label: "Creating VN {{ item.vn_name }}"
+      failed_when: >
+        vn_creation_result.status not in [200, 202]
+        and 'already' not in (vn_creation_result.json.description | default('') | lower)
+
+    - name: "Display virtual network creation results"
+      ansible.builtin.debug:
+        msg: "VN {{ item.item.vn_name }}: {{ item.json.description | default(item.json.status) }}"
+      loop: "{{ vn_creation_result.results }}"
+      loop_control:
+        label: "{{ item.item.vn_name }}"
+
+    # ── Step 4: Configure Scalable Group Tags (SGTs) ─────────────────────────
+    - name: "Create Scalable Group Tags (SGTs)"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/security-group"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          name: "{{ item.name }}"
+          securityGroupTag: "{{ item.tag }}"
+          description: "{{ item.description }}"
+          isReadOnly: false
+        validate_certs: "{{ dnac_verify }}"
+        status_code: [200, 201, 202]
+      loop: "{{ scalable_groups }}"
+      register: sgt_result
+      loop_control:
+        label: "Creating SGT {{ item.name }} ({{ item.tag }})"
+      failed_when: >
+        sgt_result.status not in [200, 201, 202]
+        and 'already' not in (sgt_result.json.description | default('') | lower)
+
+    # ── Step 5: Add IP address pools ────────────────────────────────────────
+    - name: "Add IP pools for virtual networks"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/business/sda/virtualnetwork/ippool"
+        method: POST
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+          Content-Type: application/json
+        body_format: json
+        body:
+          virtualNetworkName: "{{ item.vn_name }}"
+          ipPoolName: "{{ item.vn_name }}_Pool"
+          vlanId: "{{ item.vlan_id }}"
+          vlanName: "{{ item.vn_name }}_VLAN"
+          trafficType: "DATA"
+          authenticationPolicyName: "dot1x"
+          scalableGroupName: "{{ item.scalable_group_tag }}"
+          isLayer2Only: false
+          isCommonPool: false
+          isBridgeModeVm: false
+          siteNameHierarchy: "{{ site_hierarchy }}"
+        validate_certs: "{{ dnac_verify }}"
+        status_code: [200, 202]
+      loop: "{{ virtual_networks }}"
+      register: ip_pool_result
+      loop_control:
+        label: "Adding IP pool for {{ item.vn_name }}"
+      failed_when: >
+        ip_pool_result.status not in [200, 202]
+        and 'already' not in (ip_pool_result.json.description | default('') | lower)
+
+    # ── Step 6: Verify fabric status ────────────────────────────────────────
+    - name: "Verify fabric site status"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/business/sda/fabric-site"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: fabric_status
+
+    - name: "Display fabric site status"
+      ansible.builtin.debug:
+        msg: "Fabric: {{ item.fabricName }} | Site: {{ item.siteNameHierarchy }} | Status: {{ item.fabricStatus | default('active') }}"
+      loop: "{{ fabric_status.json.response | default([]) }}"
+      loop_control:
+        label: "{{ item.fabricName | default('unknown') }}"
+
+    - name: "Verify fabric edge nodes"
+      ansible.builtin.uri:
+        url: "https://{{ dnac_host }}:{{ dnac_port }}/dna/intent/api/v1/business/sda/fabric-node?siteNameHierarchy={{ site_hierarchy | urlencode }}"
+        method: GET
+        headers:
+          X-Auth-Token: "{{ dnac_token }}"
+        validate_certs: "{{ dnac_verify }}"
+      register: fabric_nodes
+
+    - name: "Display fabric nodes"
+      ansible.builtin.debug:
+        msg: "Node: {{ item.deviceManagementIpAddress }} | Roles: {{ item.roles | join(', ') }} | Status: {{ item.status }}"
+      loop: "{{ fabric_nodes.json.response | default([]) }}"
+      loop_control:
+        label: "{{ item.deviceManagementIpAddress | default('unknown') }}"
